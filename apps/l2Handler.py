@@ -13,9 +13,21 @@ from libs.ofProtoHelper.ofprotoHelper import ofProtoHelper
 class L2Handler(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
     opts = [
+        cfg.IntOpt('priority',
+                default=1,
+                help='Goto priority in table 0'),
         cfg.IntOpt('table',
                default=2,
                help='Table to use for L2 switching'),
+        cfg.IntOpt('cookie_arp',
+                default=101,
+                help='FLow mod cookie to use for Controller event on arp'),
+        cfg.IntOpt('cookie_low',
+                default=101,
+                help='FLow mod cookie to use for Controller event low value'),
+        cfg.IntOpt('cookie_high',
+                default=101,
+                help='FLow mod cookie to use for Controller event high value')
     ]
 
     def __init__(self, *args, **kwargs):
@@ -28,7 +40,6 @@ class L2Handler(app_manager.RyuApp):
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
-        print 'event dispatched in l2handler'
         datapath = ev.msg.datapath
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
@@ -37,11 +48,15 @@ class L2Handler(app_manager.RyuApp):
         actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
                                           ofproto.OFPCML_NO_BUFFER)]
 
-        self.ofHelper.add_goto(datapath, 0, match, 0, CONF.l2.table)
-        self.ofHelper.add_flow(datapath, 0, match, actions, CONF.l2.table)
+        self.ofHelper.add_goto(datapath, CONF.l2.priority, match, 0, CONF.l2.table)
+        self.ofHelper.add_flow(datapath, 0, match, actions, CONF.l2.table, cookie=CONF.l2.cookie_arp)
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
+        if ev.msg.cookie in range(CONF.l2.cookie_low, CONF.l2.cookie_high):
+            print 'packet being handled in L2 module'
+        else:
+            return
         # If you hit this you might want to increase
         # the "miss_send_length" of your switch
         if ev.msg.msg_len < ev.msg.total_len:
@@ -83,7 +98,7 @@ class L2Handler(app_manager.RyuApp):
             # verify if we have a valid buffer_id, if yes avoid to send both
             # flow_mod & packet_out
             if msg.buffer_id != ofproto.OFP_NO_BUFFER:
-                self.ofHelper.add_flow(datapath, 1, match, actions, CONF.l2.table, msg.buffer_id)
+                self.ofHelper.add_flow(datapath, 1, match, actions, CONF.l2.table, buffer_id=msg.buffer_id)
                 return
             else:
                 self.ofHelper.add_flow(datapath, 1, match, actions, CONF.l2.table)
