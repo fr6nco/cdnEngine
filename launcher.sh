@@ -1,0 +1,1 @@
+ryu-manager --config-file ./config/config.conf --app-lists ./apps/l2Handler.py ./apps/cdnHandler.py --verbose
