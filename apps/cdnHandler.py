@@ -6,6 +6,7 @@ from ryu.ofproto import ofproto_v1_3
 from ryu.lib.packet import packet
 from ryu.lib.packet import ethernet
 from ryu.lib.packet import ether_types
+from ryu.lib.packet import arp
 from ryu import cfg
 CONF = cfg.CONF
 
@@ -36,9 +37,12 @@ class CdnHandler(app_manager.RyuApp):
         cfg.IntOpt('cookie_high',
                 default=100,
                 help='FLow mod cookie to use for Controller event high range'),
-        cfg.StrOpt('ip_address',
+        cfg.StrOpt('rr_ip_address',
                 default='10.0.0.5',
                 help='IP address on which the Request Router listens'),
+        cfg.StrOpt('rr_mac_address',
+                default='aa:bb:cc:dd:ee:ff',
+                help='MAC address of the request router if the address is requested L2'),
         cfg.IntOpt('port',
                 default=80,
                 help='Port on which the Request Router listens for HTTP requests')
@@ -56,14 +60,17 @@ class CdnHandler(app_manager.RyuApp):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
 
+        # installs command to goto this module for l2 as priority 1
         match = parser.OFPMatch()
         actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
         self.ofHelper.add_goto(datapath, CONF.cdn.priority, match, 0, CONF.cdn.table)
 
+        # goes to next module, L2
         match = parser.OFPMatch()
         self.ofHelper.add_goto(datapath, 0, match, CONF.cdn.table, CONF.l2.table)
         
-        match = parser.OFPMatch(eth_type=0x0806, arp_tpa=CONF.cdn.ip_address)
+        # packet is handled if IP port is matched
+        match = parser.OFPMatch(eth_type=0x0806, arp_tpa=CONF.cdn.rr_ip_address)
         actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
         self.ofHelper.add_flow(datapath, 1, match, actions, CONF.cdn.table, CONF.cdn.cookie_arp)
 
@@ -74,5 +81,33 @@ class CdnHandler(app_manager.RyuApp):
         else:
             return
 
+        # If you hit this you might want to increase
+        # the "miss_send_length" of your switch
+        if ev.msg.msg_len < ev.msg.total_len:
+            self.logger.debug("packet truncated: only %s of %s bytes",
+                              ev.msg.msg_len, ev.msg.total_len)
+        
+        msg = ev.msg
+        datapath = msg.datapath
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+        in_port = msg.match['in_port']
 
-            
+        pkt = packet.Packet(msg.data)
+
+        for protocol in pkt:
+            if protocol.protocol_name == 'arp':
+                print protocol
+                if protocol.opcode == arp.ARP_REQUEST:
+                    # ARP request to router port -> send ARP reply
+                    src_mac = protocol.src_mac
+                    dst_mac = CONF.cdn.rr_mac_address
+                    output = in_port
+                    dst_ip = CONF.cdn.rr_ip_address
+                    src_ip = protocol.src_ip
+
+                    self.ofHelper.send_arp(datapath=datapath, arp_opcode=arp.ARP_REPLY, 
+                                        src_mac=src_mac, dst_mac=dst_mac, src_ip=src_ip, 
+                                        dst_ip=dst_ip, output=output)
+            elif protocol.protocol_name == 'tcp':
+                print 'werre handling TCP SYN'
