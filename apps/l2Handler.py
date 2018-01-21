@@ -54,7 +54,7 @@ class L2Handler(app_manager.RyuApp):
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
         if ev.msg.cookie in range(CONF.l2.cookie_low, CONF.l2.cookie_high):
-            print 'packet being handled in L2 module'
+            self.logger.debug('packet being handled in L2 module')
         else:
             return
         # If you hit this you might want to increase
