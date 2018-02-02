@@ -18,34 +18,44 @@ class TCPSession():
     DIRECTION_OUTBOUND = "OUTBOUND"
 
     RETRANSMISSION_TIMER = 1
+    RETRANSMISSION_TIMER_MULTIPLIER = 1.5  # Use 2 in prod
+    RETRANSMISSION_RETRIES = 5  # USE 15 in prod
     QUIET_TIMER = 60
-    KEEPALIVE_TIMER = 15
+    KEEPALIVE_TIMER = 30
     IDLE_TIMER = 30
+    TIMEOUT_TIMER = 30  # USE 120 in prod
 
     def __init__(self, datapath, src_ip, dst_ip, src_port, dst_port, seq, direction, in_port=None, src_mac=None, dst_mac=None, tcp_opts=None, pkt=None):
         self.datapath = datapath
-        self.pool = []
+        self.timers = {
+            'retransmission': None,
+            'timeout': None,
+            'keepalive': None,
+        }
+
+        self.src_mac = src_mac
+        self.dst_mac = dst_mac
+        self.src_ip = src_ip
+        self.src_port = src_port
+        self.dst_ip = dst_ip
+        self.dst_port = dst_port
+        self.last_sent_chunk_size = 0
+        self.sent_acked = False
+        self.received_acked = False
+        self.lastRetransmission = self.RETRANSMISSION_TIMER
+        self.retransmissionRetries = 0
 
         if direction == self.DIRECTION_INBOUND:
             self.in_port = in_port
             self.direction = self.DIRECTION_INBOUND
             self.state = self.STATE_LISTEN
             self.source_seq = seq
-            self.seq = self._generate_seq()
+            self.dst_seq = self._generate_seq()
             self.last_received_seq = seq
-            self.last_sent_seq = self.seq
-            self.last_sent_chunk = 0
-            self.sent_acked = False
-            self.received_acked = False
-            self.initial_pkt = pkt
-            self.src_mac = src_mac
-            self.dst_mac = dst_mac
-            self.src_ip = src_ip
-            self.src_port = src_port
-            self.dst_ip = dst_ip
-            self.dst_port = dst_port
+            self.last_sent_seq = self.dst_seq
             self.tcp_opts = tcp_opts
-            self.lastRetransmission = self.RETRANSMISSION_TIMER
+            self.initial_pkt = pkt
+
 
     def __str__(self):
         return "%s:%s:%d:%s:%d" % (self.datapath.id, self.src_ip, self.src_port, self.dst_ip, self.dst_port)
@@ -58,8 +68,7 @@ class TCPSession():
 
     def generateSYNACK(self):
         pkt = packet.Packet()
-        print self.tcp_opts
-        t = tcp.tcp(src_port=self.dst_port, dst_port=self.src_port, seq=self.seq, ack=self.source_seq+1, offset=0, bits=(tcp.TCP_SYN | tcp.TCP_ACK), window_size=28960, csum=0, urgent=False,
+        t = tcp.tcp(src_port=self.dst_port, dst_port=self.src_port, seq=self.dst_seq, ack=self.source_seq+1, offset=0, bits=(tcp.TCP_SYN | tcp.TCP_ACK), window_size=28960, csum=0, urgent=False,
                     option=[x for x in self.tcp_opts if type(x) is not tcp.TCPOptionTimestamps])
         ip = ipv4.ipv4(version=4, header_length=5, tos=0, total_length=0, identification=0, flags=0, offset=0, ttl=255, proto=6, csum=0, src=self.dst_ip, dst=self.src_ip, option=None)
         e = ethernet.ethernet(dst=self.src_mac, src=self.dst_mac, ethertype=ether_types.ETH_TYPE_IP)
@@ -84,7 +93,7 @@ class TCPSession():
     def terminate(self):
         # SEND FIN ACK
         pkt = packet.Packet()
-        t = tcp.tcp(src_port=self.dst_port, dst_port=self.src_port, seq=self.last_sent_seq + self.last_sent_chunk + 1, ack=self.last_received_seq + 1,
+        t = tcp.tcp(src_port=self.dst_port, dst_port=self.src_port, seq=self.last_sent_seq + self.last_sent_chunk_size + 1, ack=self.last_received_seq + 1,
                     offset=0, bits=(tcp.TCP_ACK|tcp.TCP_FIN), window_size=28960, csum=0, urgent=False)
         ip = ipv4.ipv4(version=4, header_length=5, tos=0, total_length=0, identification=0, flags=0, offset=0, ttl=255, proto=6, csum=0, src=self.dst_ip, dst=self.src_ip, option=None)
         e = ethernet.ethernet(dst=self.src_mac, src=self.dst_mac, ethertype=ether_types.ETH_TYPE_IP)
@@ -111,42 +120,61 @@ class TCPSession():
 
     def handleRetransmission(self):
         print 'Retranmsission occured'
-        #TODO Implement retransmission on SYN, we should not get other retransmissions.
-        self.setState(self.state)
+        self.retransmissionRetries += 1
+        self.lastRetransmission *= self.RETRANSMISSION_TIMER_MULTIPLIER
+
+        if self.retransmissionRetries > self.RETRANSMISSION_RETRIES:
+            print 'Reached maximum level of retransmissions, closing TCP connection'
+            self.setState(self.STATE_CLOSED)
+        else:
+            if self.state == self.STATE_SYN_RECEIVED:
+                self.generateSYNACK()
+                self.setState(self.state)
 
     def handleKeepalive(self):
         print 'Keepalive occured'
-        #TODO Implement keepalive messages, we will need this when we are going to pre-fetch sessions
         self.setState(self.state)
 
+    def handleTimeout(self):
+        print 'Timeout occured, closing connection'
+        self.setState(self.STATE_CLOSED)
+
     def clearTimers(self):
-        for thr in self.pool:
+        for key, thr in self.timers.iteritems():
             thr.kill()
-        self.pool = []
+        self.timers = {
+            'retransmission': None,
+            'timeout': None,
+            'keepalive': None,
+        }
 
     def setTimers(self):
-        self.clearTimers()
-
         if self.direction == self.DIRECTION_INBOUND:
             if self.state == self.STATE_SYN_RECEIVED:
                 thr = eventlet.spawn_after(self.lastRetransmission, self.handleRetransmission)
-                self.pool.append(thr)
-                print self.pool
+                self.timers['retransmission'] = thr
+                if self.timers['timeout'] is None:
+                    #IF not none, timer is already running
+                    thr = eventlet.spawn_after(self.TIMEOUT_TIMER, self.handleTimeout)
+                    self.timers['timeout'] = thr
+
                 print 'state is SYN RECEIVED, setting retransmission timer'
-            if self.state == self.STATE_ESTABLISHED:
+            elif self.state == self.STATE_ESTABLISHED:
                 thr = eventlet.spawn_after(self.KEEPALIVE_TIMER, self.handleKeepalive)
-                self.pool.append(thr)
-                print self.pool
+                self.timers['keepalive'] = thr
                 print 'state is ESTABLISHED, setting keepalive timer'
 
                 if not self.sent_acked:
                     thr = eventlet.spawn_after(self.lastRetransmission, self.handleRetransmission)
-                    self.pool.append(thr)
+                    self.timers['keepalive'] = thr
                     print 'Last sent packet was not yet acknowledged, setting a retransmission timer until we receive ACK'
+            elif self.state == self.STATE_CLOSED:
+                self.clearTimers()
+
 
     def setState(self, state):
         self.state = state
-        print 'current state' + self.state
+        print 'current state ' + self.state
         self.setTimers()
 
     def handlePacket(self, pkt):
@@ -156,14 +184,13 @@ class TCPSession():
             print 'direction is inbound'
             if self.state == self.STATE_LISTEN:
                 print 'were are in state listen'
-                # Packet is loaded already in constructor
+                # S1
+                # Going to SYN received state
                 self.generateSYNACK()
                 self.received_acked = True
                 self.setState(self.STATE_SYN_RECEIVED)
                 return
             if self.state == self.STATE_SYN_RECEIVED:
-                # excepting ACK, going to established state
-                print 'we are in state syn_received'
                 if (protocol.bits & tcp.TCP_FIN):
                     print 'fin received'
                     self.last_received_seq = protocol.seq
@@ -173,7 +200,8 @@ class TCPSession():
                 elif (protocol.bits & tcp.TCP_RST):
                     pass
                 elif (protocol.bits & tcp.TCP_ACK):
-                    print 'ack set'
+                    #S6
+                    #Going to established state
                     if protocol.ack == self.last_sent_seq + 1 and protocol.seq == self.source_seq + 1:
                         self.last_received_seq = protocol.seq
                         self.sent_acked = True
@@ -220,6 +248,7 @@ class TCPSession():
 class TCPHandler():
     def __init__(self):
         self.sessions = {}
+        eventlet.spawn_after(1, self.eraseClosed)
 
     def lookupSession(self, tcpsess, datapath_id):
         if datapath_id not in self.sessions:
@@ -235,7 +264,11 @@ class TCPHandler():
 
     def eraseClosed(self):
         for datapath in self.sessions:
+            prevlen = len(self.sessions[datapath])
             self.sessions[datapath] = [x for x in self.sessions[datapath] if not x.state == TCPSession.STATE_CLOSED]
+            if prevlen > len(self.sessions[datapath]):
+                print 'removed 1 TCP connection'
+        eventlet.spawn_after(1, self.eraseClosed)
 
     def processIncoming(self, datapath, pkt, in_port):
         protocol = pkt.get_protocol(ethernet.ethernet)
@@ -269,7 +302,6 @@ class TCPHandler():
                              seq=seq, direction=TCPSession.DIRECTION_INBOUND, in_port=in_port, src_mac=src_mac, dst_mac=dst_mac, tcp_opts=tcp_opts, pkt=pkt)
         tcpsess = self.lookupSession(tcpsess, datapath.id)
         tcpsess.handlePacket(pkt)
-        self.eraseClosed()
         return tcpsess
 
     def getAll(self):
