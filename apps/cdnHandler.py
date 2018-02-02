@@ -14,7 +14,7 @@ from ryu import cfg
 CONF = cfg.CONF
 
 from libs.ofProtoHelper.ofprotoHelper import ofProtoHelper
-
+from libs.tcp_engine.tcp_handler import TCPSession, TCPHandler
 
 class CdnHandler(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
@@ -56,6 +56,7 @@ class CdnHandler(app_manager.RyuApp):
 
         CONF.register_opts(self.opts, group='cdn')
         self.ofHelper = ofProtoHelper()
+        self.tcpHandler = TCPHandler()
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
@@ -110,7 +111,11 @@ class CdnHandler(app_manager.RyuApp):
         pkt = packet.Packet(msg.data)
 
         for protocol in pkt:
-            if protocol.protocol_name == 'arp':
+            if not hasattr(protocol, 'protocol_name'):
+                print 'Payload'
+                print protocol
+                pass
+            elif protocol.protocol_name == 'arp':
                 if protocol.opcode == arp.ARP_REQUEST:
                     # ARP request to router port -> send ARP reply
                     self.logger.info('received ARP requests from ' + protocol.src_ip)
@@ -123,7 +128,13 @@ class CdnHandler(app_manager.RyuApp):
                                         src_mac=src_mac, dst_mac=dst_mac, src_ip=src_ip, 
                                         dst_ip=dst_ip, output=in_port)
             elif protocol.protocol_name == 'tcp':
-                print 'werre handling TCP SYN'
+                if ev.msg.cookie == CONF.cdn.cookie_rr:
+                    tcpsess = self.tcpHandler.processIncoming(datapath=datapath, pkt=pkt, in_port=in_port)
+                    #TODO what else to do with this
+                else:
+                    print 'respond with ICMP port unreachable'
+                    #TODO
+                    pass
             elif protocol.protocol_name == 'icmp':
                 if protocol.type == icmp.ICMP_ECHO_REQUEST:
                     self.logger.info('Received ICMP echo request')
