@@ -41,14 +41,14 @@ class CdnHandler(app_manager.RyuApp):
                 default=100,
                 help='FLow mod cookie to use for Controller event high range'),
         cfg.StrOpt('rr_ip_address',
-                default='10.0.0.5',
+                default='10.10.0.5',
                 help='IP address on which the Request Router listens'),
-        cfg.StrOpt('rr_mac_address',
-                default='aa:bb:cc:dd:ee:ff',
-                help='MAC address of the request router if the address is requested L2'),
         cfg.IntOpt('rr_port',
                 default=80,
-                help='Port on which the Request Router listens for HTTP requests')
+                help='Port on which the Request Router listens for HTTP requests'),
+        cfg.IntOpt('sw_dpid',
+                default=66766,
+                help='Datapath ID which acts as a management switch for the CDN engine')
     ]
 
     def __init__(self, *args, **kwargs):
@@ -57,14 +57,17 @@ class CdnHandler(app_manager.RyuApp):
         CONF.register_opts(self.opts, group='cdn')
         self.ofHelper = ofProtoHelper()
         self.tcpHandler = TCPHandler()
+        self.switches = {}
+        self.arpTable = {}
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
         datapath = ev.msg.datapath
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
+        self.switches[datapath.id] = datapath
 
-        # installs command to goto this module for l2 as priority 1
+        # installs command to goto this module as priority 1
         match = parser.OFPMatch()
         actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
         self.ofHelper.add_goto(datapath, CONF.cdn.priority, match, 0, CONF.cdn.table)
@@ -72,21 +75,50 @@ class CdnHandler(app_manager.RyuApp):
         # goes to next module, L2
         match = parser.OFPMatch()
         self.ofHelper.add_goto(datapath, 0, match, CONF.cdn.table, CONF.l2.table)
-        
-        # packet is handled if ARP is matched for request router IP
-        match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_ARP, arp_tpa=CONF.cdn.rr_ip_address)
-        actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
-        self.ofHelper.add_flow(datapath, 1, match, actions, CONF.cdn.table, CONF.cdn.cookie_arp)
 
-        # packet in handled if IP protocol handled for Request Router IP (might be ICMP too)
-        match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, ipv4_dst=CONF.cdn.rr_ip_address)
-        actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
-        self.ofHelper.add_flow(datapath, 2, match, actions, CONF.cdn.table, CONF.cdn.cookie_ip)
 
-        # packet in handled on exact IP and TCP port match for request router
-        match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, ipv4_dst=CONF.cdn.rr_ip_address, ip_proto=in_proto.IPPROTO_TCP, tcp_dst=CONF.cdn.rr_port)
-        actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
-        self.ofHelper.add_flow(datapath, 3, match, actions, CONF.cdn.table, CONF.cdn.cookie_rr)
+        if datapath.id == CONF.cdn.sw_dpid:
+            # Packet in handler for arp replies
+            match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_ARP, arp_spa=CONF.cdn.rr_ip_address)
+            actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
+            self.ofHelper.add_flow(datapath, 1, match, actions, CONF.cdn.table, CONF.cdn.cookie_arp)
+
+            # We want to handle arp requests too
+            # packet is handled if ARP is matched for request router IP
+            match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_ARP, arp_tpa=CONF.cdn.rr_ip_address)
+            actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
+            self.ofHelper.add_flow(datapath, 2, match, actions, CONF.cdn.table, CONF.cdn.cookie_arp)
+
+            # packet in handled if IP protocol handled from Request Router IP (might be ICMP too)
+            match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, ipv4_src=CONF.cdn.rr_ip_address)
+            actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
+            self.ofHelper.add_flow(datapath, 3, match, actions, CONF.cdn.table, CONF.cdn.cookie_ip)
+
+            # packet in handled if IP protocol handled from Request Router IP (might be ICMP too)
+            match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, ipv4_dst=CONF.cdn.rr_ip_address)
+            actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
+            self.ofHelper.add_flow(datapath, 3, match, actions, CONF.cdn.table, CONF.cdn.cookie_ip)
+
+            # packet in handled on exact IP and TCP port match from request router
+            match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, ipv4_src=CONF.cdn.rr_ip_address,
+                                    ip_proto=in_proto.IPPROTO_TCP, tcp_src=CONF.cdn.rr_port)
+            actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
+            self.ofHelper.add_flow(datapath, 4, match, actions, CONF.cdn.table, CONF.cdn.cookie_rr)
+        else:
+            # packet is handled if ARP is matched for request router IP
+            match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_ARP, arp_tpa=CONF.cdn.rr_ip_address)
+            actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
+            self.ofHelper.add_flow(datapath, 1, match, actions, CONF.cdn.table, CONF.cdn.cookie_arp)
+
+            # packet in handled if IP protocol handled for Request Router IP (might be ICMP too)
+            match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, ipv4_dst=CONF.cdn.rr_ip_address)
+            actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
+            self.ofHelper.add_flow(datapath, 2, match, actions, CONF.cdn.table, CONF.cdn.cookie_ip)
+
+            # packet in handled on exact IP and TCP port match for request router
+            match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, ipv4_dst=CONF.cdn.rr_ip_address, ip_proto=in_proto.IPPROTO_TCP, tcp_dst=CONF.cdn.rr_port)
+            actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
+            self.ofHelper.add_flow(datapath, 3, match, actions, CONF.cdn.table, CONF.cdn.cookie_rr)
 
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
@@ -105,37 +137,81 @@ class CdnHandler(app_manager.RyuApp):
         msg = ev.msg
         datapath = msg.datapath
         ofproto = datapath.ofproto
-        parser = datapath.ofproto_parser
         in_port = msg.match['in_port']
 
         pkt = packet.Packet(msg.data)
 
         for protocol in pkt:
             if not hasattr(protocol, 'protocol_name'):
-                print 'Payload'
-                print protocol
                 pass
             elif protocol.protocol_name == 'arp':
-                if protocol.opcode == arp.ARP_REQUEST:
-                    # ARP request to router port -> send ARP reply
-                    self.logger.info('received ARP requests from ' + protocol.src_ip)
-                    src_mac = protocol.src_mac
-                    dst_mac = CONF.cdn.rr_mac_address
-                    dst_ip = CONF.cdn.rr_ip_address
-                    src_ip = protocol.src_ip
+                src_mac = protocol.src_mac
+                dst_mac = protocol.dst_mac
+                src_ip = protocol.src_ip
+                dst_ip = protocol.dst_ip
 
-                    self.ofHelper.send_arp_response(datapath=datapath, arp_opcode=arp.ARP_REPLY, 
-                                        src_mac=src_mac, dst_mac=dst_mac, src_ip=src_ip, 
-                                        dst_ip=dst_ip, output=in_port)
+                if protocol.opcode == arp.ARP_REQUEST:
+                    if protocol.dst_ip == CONF.cdn.rr_ip_address:
+                        # ARP request to router port -> Proxy ARP request to RR
+                        self.arpTable[src_ip] = {}
+                        self.arpTable[src_ip] = {'datapath_id': datapath.id, 'in_port': in_port, 'mac': src_mac}
+
+                        # Proxy ARP request to the management sw
+                        mgtdatapath = self.switches[CONF.cdn.sw_dpid]
+                        self.ofHelper.send_arp_request(mgtdatapath, src_mac, src_ip, dst_ip, ofproto.OFPP_FLOOD)
+                    elif protocol.src_ip == CONF.cdn.rr_ip_address:
+                        # Arp request from the request router to other server
+                        self.arpTable[src_ip] = {}
+                        self.arpTable[src_ip] = {'datapath_id': datapath.id, 'in_port': in_port, 'mac': src_mac}
+
+                        # Flood to all devices
+                        for dpid, sw in self.switches.iteritems():
+                            self.ofHelper.send_arp_request(sw, src_mac, src_ip, dst_ip, ofproto.OFPP_FLOOD)
+
+                elif protocol.opcode == arp.ARP_REPLY:
+                    self.arpTable[src_ip] = {}
+                    self.arpTable[src_ip] = {'datapath_id': datapath.id, 'in_port': in_port, 'mac': src_mac}
+
+                    outdatapath = self.switches[self.arpTable[dst_ip]['datapath_id']]
+                    out_port = self.arpTable[dst_ip]['in_port']
+
+                    self.ofHelper.send_arp_response(outdatapath, src_mac, dst_mac, src_ip, dst_ip, out_port)
+                print self.arpTable
+            elif protocol.protocol_name == 'ethernet':
+                print protocol
+                src_mac = protocol.src
+                dst_mac = protocol.dst
+            elif protocol.protocol_name == 'ipv4':
+                dst_ip = protocol.dst
+                src_ip = protocol.src
+                self.arpTable[src_ip] = {}
+                self.arpTable[src_ip] = {'datapath_id': datapath.id, 'in_port': in_port, 'mac': src_mac}
+            elif protocol.protocol_name == 'icmp':
+                if protocol.type == icmp.ICMP_ECHO_REQUEST:
+                    if dst_ip in self.arpTable.keys():
+                        outdatapath = self.switches[self.arpTable[dst_ip]['datapath_id']]
+                        out_port = self.arpTable[dst_ip]['in_port']
+                        self.ofHelper.send_packet_out(datapath=outdatapath, pkt=pkt, output=out_port)
+                    else:
+                        for dpid, sw in self.switches.iteritems():
+                            self.ofHelper.send_arp_request(sw, src_mac, src_ip, dst_ip, ofproto.OFPP_FLOOD)
+                elif protocol.type == icmp.ICMP_ECHO_REPLY:
+                    if dst_ip in self.arpTable.keys():
+                        outdatapath = self.switches[self.arpTable[dst_ip]['datapath_id']]
+                        out_port = self.arpTable[dst_ip]['in_port']
+                        self.ofHelper.send_packet_out(datapath=outdatapath, pkt=pkt, output=out_port)
+                    else:
+                        for dpid, sw in self.switches.iteritems():
+                            # self.ofHelper.send_arp_request(sw, src_mac, src_ip, dst_ip, ofproto.OFPP_FLOOD)
+                            pass
             elif protocol.protocol_name == 'tcp':
                 if ev.msg.cookie == CONF.cdn.cookie_rr:
-                    tcpsess = self.tcpHandler.processIncoming(datapath=datapath, pkt=pkt, in_port=in_port)
-                    #TODO what else to do with this
+                    #tcpsess = self.tcpHandler.processIncoming(datapath=datapath, pkt=pkt, in_port=in_port)
+                    print 'DO the passthrough thing here'
                 else:
                     print 'respond with ICMP port unreachable'
                     #TODO
                     pass
-            elif protocol.protocol_name == 'icmp':
-                if protocol.type == icmp.ICMP_ECHO_REQUEST:
-                    self.logger.info('Received ICMP echo request')
-                    self.ofHelper.send_icmp_response(datapath=datapath, old_pkt=pkt, output=in_port)
+
+
+

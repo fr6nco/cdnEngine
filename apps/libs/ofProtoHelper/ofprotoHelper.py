@@ -3,6 +3,8 @@ from ryu.lib.packet import arp
 from ryu.lib.packet import packet
 from ryu.lib.packet import icmp
 from ryu.lib.packet import ipv4
+from ryu.lib import mac
+
 
 import logging
 LOG = logging.getLogger('ryu.base.app_manager')
@@ -38,9 +40,37 @@ class ofProtoHelper():
                                     cookie=cookie,
                                     match=match, instructions=inst)
         datapath.send_msg(mod)
-    
-    ## Send ARP req
-    def send_arp_response(self, datapath, arp_opcode, src_mac, dst_mac,
+
+    ## Send ARP request
+    def send_arp_request(self, datapath, src_mac, src_ip, dst_ip, output):
+        ethertype_ether = ether_types.ETH_TYPE_ARP
+
+        arp_opcode = arp.ARP_REQUEST
+        hwtype = arp.ARP_HW_TYPE_ETHERNET
+        ethertype_arp = ether_types.ETH_TYPE_IP
+        hlen = 6
+        plen = 4
+
+        pkt = packet.Packet()
+        e = ethernet.ethernet(src=src_mac, dst=mac.BROADCAST_STR, ethertype=ethertype_ether)
+        a = arp.arp(hwtype=hwtype, proto=ethertype_arp, hlen=hlen, plen=plen, opcode=arp_opcode,
+                    src_mac=src_mac, dst_mac=mac.DONTCARE_STR, src_ip=src_ip, dst_ip=dst_ip)
+        pkt.add_protocol(e)
+        pkt.add_protocol(a)
+        pkt.serialize()
+
+        ofp = datapath.ofproto
+        ofp_parser = datapath.ofproto_parser
+
+        actions = [datapath.ofproto_parser.OFPActionOutput(output, 0)]
+
+        res = ofp_parser.OFPPacketOut(datapath=datapath, buffer_id=ofp.OFP_NO_BUFFER,
+                                      in_port=datapath.ofproto.OFPP_CONTROLLER, actions=actions, data=pkt.data)
+        LOG.info('Sending ARP Request for %s', dst_ip)
+        datapath.send_msg(res)
+
+    ## Send ARP response
+    def send_arp_response(self, datapath, src_mac, dst_mac,
                  src_ip, dst_ip, output):
         # Generate ARP packet
         ethertype_ether = ether_types.ETH_TYPE_ARP
@@ -52,9 +82,9 @@ class ofProtoHelper():
         plen = 4
 
         pkt = packet.Packet()
-        e = ethernet.ethernet(src=dst_mac, dst=src_mac, ethertype=ethertype_ether)
+        e = ethernet.ethernet(src=src_mac, dst=dst_mac, ethertype=ethertype_ether)
         a = arp.arp(hwtype=hwtype, proto=ethertype_arp, hlen=hlen, plen=plen, opcode=arp_opcode,
-                    src_mac=dst_mac, dst_mac=src_mac, src_ip=dst_ip, dst_ip=src_ip)
+                    src_mac=src_mac, dst_mac=dst_mac, src_ip=src_ip, dst_ip=dst_ip)
         pkt.add_protocol(e)
         pkt.add_protocol(a)
         pkt.serialize()
@@ -67,6 +97,17 @@ class ofProtoHelper():
         res = ofp_parser.OFPPacketOut(datapath=datapath, buffer_id=ofp.OFP_NO_BUFFER,
                                 in_port=datapath.ofproto.OFPP_CONTROLLER, actions=actions, data=pkt.data)
         LOG.info('Sending ARP response for %s', src_ip)
+        datapath.send_msg(res)
+
+    def send_packet_out(self, datapath, pkt, output):
+
+        actions = [datapath.ofproto_parser.OFPActionOutput(output, 0)]
+
+        ofp = datapath.ofproto
+        ofp_parser = datapath.ofproto_parser
+
+        res = ofp_parser.OFPPacketOut(datapath=datapath, buffer_id=ofp.OFP_NO_BUFFER,
+                                      in_port=datapath.ofproto.OFPP_CONTROLLER, actions=actions, data=pkt.data)
         datapath.send_msg(res)
 
 
