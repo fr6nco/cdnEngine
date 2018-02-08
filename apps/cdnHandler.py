@@ -120,6 +120,19 @@ class CdnHandler(app_manager.RyuApp):
             actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
             self.ofHelper.add_flow(datapath, 3, match, actions, CONF.cdn.table, CONF.cdn.cookie_rr)
 
+    def storeMac(self, src_ip, datapath_id, in_port, mac):
+        self.arpTable[src_ip] = {}
+        self.arpTable[src_ip] = {'datapath_id': datapath_id, 'in_port': in_port, 'mac': mac}
+
+    def getOutPort(self, ip):
+        if ip not in self.arpTable:
+            return None, None
+        else:
+            outdatapath = self.switches[self.arpTable[ip]['datapath_id']]
+            out_port = self.arpTable[ip]['in_port']
+
+        return outdatapath, out_port
+
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
@@ -153,61 +166,50 @@ class CdnHandler(app_manager.RyuApp):
                 if protocol.opcode == arp.ARP_REQUEST:
                     if protocol.dst_ip == CONF.cdn.rr_ip_address:
                         # ARP request to router port -> Proxy ARP request to RR
-                        self.arpTable[src_ip] = {}
-                        self.arpTable[src_ip] = {'datapath_id': datapath.id, 'in_port': in_port, 'mac': src_mac}
+                        self.storeMac(src_ip, datapath.id, in_port, src_mac)
 
                         # Proxy ARP request to the management sw
                         mgtdatapath = self.switches[CONF.cdn.sw_dpid]
                         self.ofHelper.send_arp_request(mgtdatapath, src_mac, src_ip, dst_ip, ofproto.OFPP_FLOOD)
                     elif protocol.src_ip == CONF.cdn.rr_ip_address:
                         # Arp request from the request router to other server
-                        self.arpTable[src_ip] = {}
-                        self.arpTable[src_ip] = {'datapath_id': datapath.id, 'in_port': in_port, 'mac': src_mac}
+                        self.storeMac(src_ip, datapath.id, in_port, src_mac)
 
                         # Flood to all devices
                         for dpid, sw in self.switches.iteritems():
                             self.ofHelper.send_arp_request(sw, src_mac, src_ip, dst_ip, ofproto.OFPP_FLOOD)
 
                 elif protocol.opcode == arp.ARP_REPLY:
-                    self.arpTable[src_ip] = {}
-                    self.arpTable[src_ip] = {'datapath_id': datapath.id, 'in_port': in_port, 'mac': src_mac}
+                    self.storeMac(src_ip, datapath.id, in_port, src_mac)
 
-                    outdatapath = self.switches[self.arpTable[dst_ip]['datapath_id']]
-                    out_port = self.arpTable[dst_ip]['in_port']
+                    outdatapath, out_port = self.getOutPort(dst_ip)
+                    if outdatapath is None:
+                        return
 
                     self.ofHelper.send_arp_response(outdatapath, src_mac, dst_mac, src_ip, dst_ip, out_port)
-                print self.arpTable
             elif protocol.protocol_name == 'ethernet':
-                print protocol
                 src_mac = protocol.src
                 dst_mac = protocol.dst
             elif protocol.protocol_name == 'ipv4':
                 dst_ip = protocol.dst
                 src_ip = protocol.src
-                self.arpTable[src_ip] = {}
-                self.arpTable[src_ip] = {'datapath_id': datapath.id, 'in_port': in_port, 'mac': src_mac}
+
+                self.storeMac(src_ip, datapath.id, in_port, src_mac)
             elif protocol.protocol_name == 'icmp':
-                if protocol.type == icmp.ICMP_ECHO_REQUEST:
+                if dst_ip in self.arpTable.keys():
+                    outdatapath, out_port = self.getOutPort(dst_ip)
+                    self.ofHelper.send_packet_out(datapath=outdatapath, pkt=pkt, output=out_port)
+                else:
+                    for dpid, sw in self.switches.iteritems():
+                        self.ofHelper.send_arp_request(sw, src_mac, src_ip, dst_ip, ofproto.OFPP_FLOOD)
+            elif protocol.protocol_name == 'tcp':
+                if ev.msg.cookie == CONF.cdn.cookie_rr:
                     if dst_ip in self.arpTable.keys():
-                        outdatapath = self.switches[self.arpTable[dst_ip]['datapath_id']]
-                        out_port = self.arpTable[dst_ip]['in_port']
+                        outdatapath, out_port = self.getOutPort(dst_ip)
                         self.ofHelper.send_packet_out(datapath=outdatapath, pkt=pkt, output=out_port)
                     else:
                         for dpid, sw in self.switches.iteritems():
                             self.ofHelper.send_arp_request(sw, src_mac, src_ip, dst_ip, ofproto.OFPP_FLOOD)
-                elif protocol.type == icmp.ICMP_ECHO_REPLY:
-                    if dst_ip in self.arpTable.keys():
-                        outdatapath = self.switches[self.arpTable[dst_ip]['datapath_id']]
-                        out_port = self.arpTable[dst_ip]['in_port']
-                        self.ofHelper.send_packet_out(datapath=outdatapath, pkt=pkt, output=out_port)
-                    else:
-                        for dpid, sw in self.switches.iteritems():
-                            # self.ofHelper.send_arp_request(sw, src_mac, src_ip, dst_ip, ofproto.OFPP_FLOOD)
-                            pass
-            elif protocol.protocol_name == 'tcp':
-                if ev.msg.cookie == CONF.cdn.cookie_rr:
-                    #tcpsess = self.tcpHandler.processIncoming(datapath=datapath, pkt=pkt, in_port=in_port)
-                    print 'DO the passthrough thing here'
                 else:
                     print 'respond with ICMP port unreachable'
                     #TODO
