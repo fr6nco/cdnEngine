@@ -2,7 +2,9 @@ from ryu.lib.packet import ethernet, ether_types
 from ryu.lib.packet import arp
 from ryu.lib.packet import packet
 from ryu.lib.packet import icmp
+from ryu.lib.packet import tcp
 from ryu.lib.packet import ipv4
+from ryu.lib.packet import in_proto
 from ryu.lib import mac
 
 
@@ -111,22 +113,20 @@ class ofProtoHelper():
         datapath.send_msg(res)
 
 
-    def send_icmp_response(self, datapath, old_pkt, output):
+    def send_icmp_reply(self, datapath, old_pkt, output):
 
         pkt = packet.Packet()
-
-        dst_ip = None
 
         for protocol in old_pkt:
             if protocol.protocol_name == 'ethernet':
                 e = ethernet.ethernet(src=protocol.dst, dst=protocol.src, ethertype=ether_types.ETH_TYPE_IP)
                 pkt.add_protocol(e)
-            if protocol.protocol_name == 'ipv4':
+            elif protocol.protocol_name == 'ipv4':
                 ip = ipv4.ipv4(version=protocol.version, header_length=protocol.header_length, tos=protocol.tos, total_length=0, identification=protocol.identification,
                             flags=protocol.flags, offset=0, ttl=protocol.ttl, proto=protocol.proto, csum=0, src=protocol.dst, dst=protocol.src, option=protocol.option)
                 pkt.add_protocol(ip)
                 dst_ip = ip.dst
-            if protocol.protocol_name == 'icmp':
+            elif protocol.protocol_name == 'icmp':
                 icm = icmp.icmp(type_=icmp.ICMP_ECHO_REPLY, code=icmp.ICMP_ECHO_REPLY_CODE, csum=0, data=protocol.data)
                 pkt.add_protocol(icm)
 
@@ -142,3 +142,48 @@ class ofProtoHelper():
 
         LOG.info('Sending ICMP echo response for %s', dst_ip)
         datapath.send_msg(res)
+
+    def send_icmp_port_unreachable(self, datapath, old_pkt, output):
+
+        pkt = packet.Packet()
+        datapkt = packet.Packet()
+
+        dst_ip = None
+
+        for protocol in old_pkt:
+            if not hasattr(protocol, 'protocol_name'):
+                datapkt.add_protocol(protocol)
+            elif protocol.protocol_name == 'ethernet':
+                e = ethernet.ethernet(src=protocol.dst, dst=protocol.src, ethertype=ether_types.ETH_TYPE_IP)
+                pkt.add_protocol(e)
+            elif protocol.protocol_name == 'ipv4':
+                ip = ipv4.ipv4(dst=protocol.src, src=protocol.dst, proto=in_proto.IPPROTO_ICMP)
+                dst_ip = protocol.src
+                pkt.add_protocol(ip)
+                datapkt.add_protocol(protocol)
+            else:
+                datapkt.add_protocol(protocol)
+
+        datapkt.serialize()
+        icm_data = icmp.dest_unreach(data=datapkt.data)
+        icm = icmp.icmp(type_=icmp.ICMP_DEST_UNREACH, code=icmp.ICMP_PORT_UNREACH_CODE, csum=0, data=icm_data)
+
+        print icm
+        pkt.add_protocol(icm)
+
+        pkt.serialize()
+
+        print pkt.data
+        print icm.data
+
+        actions = [datapath.ofproto_parser.OFPActionOutput(output, 0)]
+
+        ofp = datapath.ofproto
+        ofp_parser = datapath.ofproto_parser
+
+        res = ofp_parser.OFPPacketOut(datapath=datapath, buffer_id=ofp.OFP_NO_BUFFER,
+                                      in_port=datapath.ofproto.OFPP_CONTROLLER, actions=actions, data=pkt.data)
+
+        LOG.info('Sending ICMP Port unreachable message for %s', dst_ip)
+        datapath.send_msg(res)
+

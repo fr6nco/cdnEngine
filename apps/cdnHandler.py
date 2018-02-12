@@ -211,9 +211,10 @@ class CdnHandler(app_manager.RyuApp):
                         for dpid, sw in self.switches.iteritems():
                             self.ofHelper.send_arp_request(sw, src_mac, src_ip, dst_ip, ofproto.OFPP_FLOOD)
                 else:
-                    print 'respond with ICMP port unreachable'
-                    #TODO
-                    pass
+                    print 'port unreachable'
+                    self.ofHelper.send_icmp_port_unreachable(datapath=datapath, old_pkt=pkt, output=in_port)
+            elif protocol.protocol_name == 'udp':
+                self.ofHelper.send_icmp_port_unreachable(datapath=datapath, old_pkt=pkt, output=in_port)
 
 
 
