@@ -41,7 +41,7 @@ class CdnHandler(app_manager.RyuApp):
                 default=100,
                 help='FLow mod cookie to use for Controller event high range'),
         cfg.StrOpt('rr_ip_address',
-                default='10.10.0.5',
+                default='10.10.0.4',
                 help='IP address on which the Request Router listens'),
         cfg.IntOpt('rr_port',
                 default=80,
@@ -207,6 +207,7 @@ class CdnHandler(app_manager.RyuApp):
                     if dst_ip in self.arpTable.keys():
                         outdatapath, out_port = self.getOutPort(dst_ip)
                         self.ofHelper.send_packet_out(datapath=outdatapath, pkt=pkt, output=out_port)
+                        self.tcpHandler.handleIncoming(pkt)
                     else:
                         for dpid, sw in self.switches.iteritems():
                             self.ofHelper.send_arp_request(sw, src_mac, src_ip, dst_ip, ofproto.OFPP_FLOOD)
