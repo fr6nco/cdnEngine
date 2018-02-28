@@ -3,8 +3,9 @@ import numpy as np
 from ryu.lib.packet import packet
 from ryu.lib.packet import ethernet, ipv4, tcp, ether_types
 import eventlet
-from eventlet.semaphore import Semaphore
+import uuid
 from ryu import cfg
+import copy
 
 CONF = cfg.CONF
 
@@ -23,6 +24,7 @@ class TCPSession():
     STATE_JOINED = "joined"
 
     def __init__(self, pkt):
+        self.uuid = uuid.uuid4()
         self.state = self.STATE_SYN
 
         for protocol in pkt:
@@ -34,6 +36,7 @@ class TCPSession():
             elif protocol.protocol_name == 'tcp':
                 src_port = protocol.src_port
                 dst_port = protocol.dst_port
+                self.src_seq = protocol.seq
 
         self.dst_ip = dst_ip
         self.src_ip = src_ip
@@ -44,11 +47,39 @@ class TCPSession():
             self.type = self.TYPE_CLIENT
         elif src_ip == CONF.cdn.rr_ip_address:
             self.type = self.TYPE_RR
-        else:
-            self.type = None
+
+        self.dst_seq = 0
+
+        self.syn_pkt = pkt
+
+    def setTimers(self):
+        pass
+
+    def setState(self, state):
+        pass
 
     def handlePacket(self, pkt):
-        pass
+        retpkt = packet.Packet()
+
+        e, t, i, p = None
+
+        src_ip, dst_ip, src_port, dst_port = None
+
+        for protocol in pkt:
+            if not hasattr(protocol, 'protocol_name'):
+                p = protocol
+                continue
+            elif protocol.protocol_name == 'eth':
+                e = protocol
+                continue
+            elif protocol.protocol_name == 'ipv4':
+                i = protocol
+                continue
+            elif protocol.protocol_name == 'tcp':
+                t = protocol
+
+
+
 
 class TCPHandler():
     def __init__(self):
@@ -73,12 +104,13 @@ class TCPHandler():
         if key not in self.sessions:
             if key_rev not in self.sessions:
                 sess = TCPSession(pkt)
-                if sess.type is not None:
-                    self.sessions[key] = sess
-                    print self.sessions
+                self.sessions[key] = sess
+                print self.sessions
             else:
-                self.sessions[key_rev].handlePacket(pkt)
+                retpkt = self.sessions[key_rev].handlePacket(pkt)
         else:
-            self.sessions[key].handlePacket(pkt)
+            retpkt = self.sessions[key].handlePacket(pkt)
+
+        return retpkt
 
 
