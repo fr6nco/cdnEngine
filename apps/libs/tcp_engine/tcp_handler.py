@@ -9,7 +9,6 @@ import copy
 
 CONF = cfg.CONF
 
-
 class TCPSession():
     TYPE_CLIENT = "client"
     TYPE_RR = "rr"
@@ -17,11 +16,33 @@ class TCPSession():
     STATE_SYN = "syn"
     STATE_SYN_ACK = "syn_ack"
     STATE_ACK = "ack"
+    STATE_ESTABLISHED = "established"
     STATE_CLOSING = "closing"
     STATE_HTTP = "http"
     STATE_TIMEOUT = "timeout"
     STATE_CLOSED = "closed"
     STATE_JOINED = "joined"
+    STATE_DISCARD = "discard"
+
+    #SUBStates for endpoints
+    CLIENT_STATE_SYN_SENT = "c_syn_sent"
+    CLIENT_STATE_ESTABLISHED = "c_established"
+
+    CLOSING_STATE_FIN_WAIT_1 = "cl_fin_wait_1"
+    CLOSING_STATE_FIN_WAIT_2 = "cl_fin_wait_2"
+    CLOSING_STATE_CLOSING = "cl_closing"
+    CLOSING_STATE_TIME_WAIT = "cl_time_wait"
+
+    SERVER_STATE_SYN_RCVD = "s_syn_rcvd"
+    SERVER_STATE_ESTABLISHED = "s_state_established"
+
+    CLOSING_STATE_CLOSE_WAIT = "cl_close_wait"
+    CLOSING_STATE_LAST_ACK = "cl_last_ack"
+
+    CLOSING_CLOSED = "closed"
+
+    TIMEOUT_TIMER = 60
+    QUIET_TIMER = 60
 
     def __init__(self, pkt):
         self.uuid = uuid.uuid4()
@@ -37,6 +58,9 @@ class TCPSession():
                 src_port = protocol.src_port
                 dst_port = protocol.dst_port
                 self.src_seq = protocol.seq
+                if not protocol.bits & tcp.TCP_SYN:
+                    self.state = self.STATE_DISCARD
+                    return
 
         self.dst_ip = dst_ip
         self.src_ip = src_ip
@@ -48,37 +72,63 @@ class TCPSession():
         elif src_ip == CONF.cdn.rr_ip_address:
             self.type = self.TYPE_RR
 
-        self.dst_seq = 0
+        self.client_state = self.CLIENT_STATE_SYN_SENT
+        self.server_state = self.SERVER_STATE_SYN_RCVD
 
+        self.dst_seq = 0
         self.syn_pkt = pkt
 
-    def setTimers(self):
+        self.timeoutTimer = eventlet.spawn_after(self.TIMEOUT_TIMER, self.handleTimeout)
+
+    def handleTimeout(self):
+        #TODO handle timeout
+        #TODO start quiet timer
+        #TODO goto timeout state
+        print 'timeout occured'
         pass
 
-    def setState(self, state):
-        pass
 
     def handlePacket(self, pkt):
-        retpkt = packet.Packet()
+        #TODO if doing L3, update mac addresses too
 
-        e, t, i, p = None
-
-        src_ip, dst_ip, src_port, dst_port = None
+        e = None
+        i = None
+        t = None
+        p = None
 
         for protocol in pkt:
             if not hasattr(protocol, 'protocol_name'):
                 p = protocol
-                continue
-            elif protocol.protocol_name == 'eth':
+            elif protocol.protocol_name == 'ethernet':
                 e = protocol
-                continue
             elif protocol.protocol_name == 'ipv4':
                 i = protocol
-                continue
             elif protocol.protocol_name == 'tcp':
                 t = protocol
 
-
+        if self.type == self.TYPE_CLIENT:
+            if i.dst == CONF.cdn.rr_ip_address:
+                if self.state == self.STATE_SYN:
+                    if t.bits & tcp.TCP_SYN:
+                        #TODO, maybe remove TCP Timestamp option
+                        return pkt
+                elif self.state == self.STATE_SYN_ACK:
+                    if t.bits & tcp.TCP_SYN:
+                        return pkt
+                    elif t.bits & tcp.TCP_ACK:
+                        self.timeoutTimer.kill()
+                        self.state = self.STATE_ESTABLISHED
+                        return pkt
+            elif i.src == CONF.cdn.rr_ip_address:
+                if self.state == self.STATE_SYN:
+                    if t.bits & (tcp.TCP_SYN | tcp.TCP_ACK):
+                        self.timeoutTimer.kill()
+                        self.timeoutTimer = eventlet.spawn_after(self.TIMEOUT_TIMER, self.handleTimeout)
+                        self.state = self.STATE_SYN_ACK
+                        return pkt
+                elif self.state == self.STATE_SYN_ACK:
+                    if t.bits & (tcp.TCP_SYN | tcp.TCP_ACK):
+                        return pkt
 
 
 class TCPHandler():
@@ -104,8 +154,10 @@ class TCPHandler():
         if key not in self.sessions:
             if key_rev not in self.sessions:
                 sess = TCPSession(pkt)
-                self.sessions[key] = sess
-                print self.sessions
+                if not sess.state == TCPSession.STATE_DISCARD:
+                    self.sessions[key] = sess
+                    print 'adding new session'
+                    retpkt = self.sessions[key].handlePacket(pkt)
             else:
                 retpkt = self.sessions[key_rev].handlePacket(pkt)
         else:
