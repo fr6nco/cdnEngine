@@ -206,8 +206,9 @@ class CdnHandler(app_manager.RyuApp):
                 if ev.msg.cookie == CONF.cdn.cookie_rr:
                     if dst_ip in self.arpTable.keys():
                         out_pkt = self.tcpHandler.handleIncoming(pkt)
-                        outdatapath, out_port = self.getOutPort(dst_ip)
-                        self.ofHelper.send_packet_out(datapath=outdatapath, pkt=out_pkt, output=out_port)
+                        if out_pkt:
+                            outdatapath, out_port = self.getOutPort(dst_ip)
+                            self.ofHelper.send_packet_out(datapath=outdatapath, pkt=out_pkt, output=out_port)
                     else:
                         for dpid, sw in self.switches.iteritems():
                             self.ofHelper.send_arp_request(sw, src_mac, src_ip, dst_ip, ofproto.OFPP_FLOOD)

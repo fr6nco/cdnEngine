@@ -5,7 +5,7 @@ from ryu.lib.packet import ethernet, ipv4, tcp, ether_types
 import eventlet
 import uuid
 from ryu import cfg
-import copy
+from http_handler import HttpRequest
 
 CONF = cfg.CONF
 
@@ -21,6 +21,7 @@ class TCPSession():
     STATE_HTTP = "http"
     STATE_TIMEOUT = "timeout"
     STATE_CLOSED = "closed"
+    STATE_CLOSED_RESET = "closed_reset"
     STATE_JOINED = "joined"
     STATE_DISCARD = "discard"
 
@@ -78,6 +79,9 @@ class TCPSession():
         self.dst_seq = 0
         self.syn_pkt = pkt
 
+        self.payload = ""
+        self.httpRequest = None
+
         self.timeoutTimer = eventlet.spawn_after(self.TIMEOUT_TIMER, self.handleTimeout)
 
     def handleTimeout(self):
@@ -106,29 +110,83 @@ class TCPSession():
             elif protocol.protocol_name == 'tcp':
                 t = protocol
 
+        print ' we are in state '
+        print self.state
+
         if self.type == self.TYPE_CLIENT:
+            print 'type is client'
             if i.dst == CONF.cdn.rr_ip_address:
+                print 'to RR'
                 if self.state == self.STATE_SYN:
                     if t.bits & tcp.TCP_SYN:
-                        #TODO, maybe remove TCP Timestamp option
+                        #TODO remove Timestamp TCP Option
+                        print 'TCP SYN retransmission'
                         return pkt
                 elif self.state == self.STATE_SYN_ACK:
                     if t.bits & tcp.TCP_SYN:
+                        #TODO remove Timestamp TCP Option
+                        print 'SYN ACK send, however retransmission occured'
                         return pkt
                     elif t.bits & tcp.TCP_ACK:
                         self.timeoutTimer.kill()
                         self.state = self.STATE_ESTABLISHED
+                        self.client_state = self.CLIENT_STATE_ESTABLISHED
                         return pkt
+                elif self.state == self.STATE_ESTABLISHED:
+                    if t.bits & tcp.TCP_PSH:
+                        self.payload = self.payload + p
+                        self.httpRequest = HttpRequest(self.payload)
+                        self.state = self.STATE_HTTP
+                        #TODO choose SE
+                        return pkt
+                    else:
+                        if t.bits & tcp.TCP_FIN:
+                            print 'fin is set, start closing state'
+                            self.state = self.STATE_CLOSING
+                            self.client_state = self.CLOSING_STATE_FIN_WAIT_1
+                            return pkt
+                        elif t.bits & tcp.TCP_RST:
+                            print 'RST set, close immediately'
+                            self.state = self.STATE_CLOSED_RESET
+                            return pkt
+                        else:
+                            self.payload = self.payload + p
+                            print 'received part of payload'
+                            return pkt
+                elif self.state == self.STATE_HTTP:
+                    #TODO
+                    print 'ongoing comm'
+                    return pkt
+                elif self.state == self.STATE_CLOSING:
+                    #TODO
+                    print 'closing state, todo'
+                    return pkt
+                elif self.state == self.STATE_CLOSED_RESET:
+                    #TODO
+                    print 'in reset state, we should not receive anything'
+                    return pkt
+                elif self.state == self.STATE_CLOSED:
+                    #TODO
+                    print 'in closed state, start timer, we should not receive anyting'
+                    return pkt
+
             elif i.src == CONF.cdn.rr_ip_address:
+                print 'from RR'
                 if self.state == self.STATE_SYN:
                     if t.bits & (tcp.TCP_SYN | tcp.TCP_ACK):
                         self.timeoutTimer.kill()
                         self.timeoutTimer = eventlet.spawn_after(self.TIMEOUT_TIMER, self.handleTimeout)
                         self.state = self.STATE_SYN_ACK
+                        self.dst_seq = t.seq
                         return pkt
                 elif self.state == self.STATE_SYN_ACK:
                     if t.bits & (tcp.TCP_SYN | tcp.TCP_ACK):
                         return pkt
+                else:
+                    #TODO, just return dont to anything
+                    return pkt
+
+        print 'unhandled packet'
 
 
 class TCPHandler():
@@ -151,17 +209,34 @@ class TCPHandler():
     def handleIncoming(self, pkt):
         key, key_rev = self.getKeys(pkt)
 
+        retpkt = None
+
+        print 'handling'
+        print pkt
+
         if key not in self.sessions:
             if key_rev not in self.sessions:
                 sess = TCPSession(pkt)
                 if not sess.state == TCPSession.STATE_DISCARD:
                     self.sessions[key] = sess
                     print 'adding new session'
+                    print self.sessions
                     retpkt = self.sessions[key].handlePacket(pkt)
+                    print 'we ended up in state'
+                    print self.sessions[key].state
             else:
+                print 'handling backward comm'
                 retpkt = self.sessions[key_rev].handlePacket(pkt)
+                print 'we ended up in state'
+                print self.sessions[key_rev].state
         else:
+            print 'handling forward comm'
             retpkt = self.sessions[key].handlePacket(pkt)
+            print 'we ended up in state'
+            print self.sessions[key].state
+
+        if retpkt is None:
+            print 'retpkt is none now'
 
         return retpkt
 
