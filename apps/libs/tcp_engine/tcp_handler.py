@@ -123,12 +123,17 @@ class TCPSession():
 
     def handleGarbage(self):
         if self.STATE_ESTABLISHED not in [self.client_state, self.server_state]:
-            print 'Due to retransmission state did not close, however none of the client/server is in established state. CLosing and cleaning up garbage'
+            print 'Due to retransmission and bad packet ordering state did not close, ' \
+                  'however none of the client/server is in established state. CLosing and cleaning up garbage'
             self.state = self.STATE_CLOSED
 
     def handleClosing(self, flags, from_client, p, seq, ack):
         if self.garbageTimer is None:
             self.garbageTimer = eventlet.spawn_after(self.GARBAGE_TIMER, self.handleGarbage)
+
+        if flags & tcp.TCP_RST:
+            self.handleReset()
+            return
 
         if from_client:
             if flags & tcp.TCP_FIN:
