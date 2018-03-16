@@ -168,13 +168,9 @@ class ofProtoHelper():
         icm_data = icmp.dest_unreach(data=datapkt.data)
         icm = icmp.icmp(type_=icmp.ICMP_DEST_UNREACH, code=icmp.ICMP_PORT_UNREACH_CODE, csum=0, data=icm_data)
 
-        print icm
         pkt.add_protocol(icm)
 
         pkt.serialize()
-
-        print pkt.data
-        print icm.data
 
         actions = [datapath.ofproto_parser.OFPActionOutput(output, 0)]
 

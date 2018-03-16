@@ -19,7 +19,7 @@ class TCPSession():
     STATE_OPENING = 'opening'
     STATE_ESTABLISHED = 'established'
     STATE_CLOSING = 'closing'
-    STATE_TIME_WAIT = 'wait'
+    STATE_TIME_WAIT = 'close_time_wait'
 
     STATE_TIMEOUT_TIME_WAIT = 'timeout_wait'
     STATE_TIMEOUT = "timeout"
@@ -31,22 +31,16 @@ class TCPSession():
 
     #SUBStates for endpoints
     CLIENT_STATE_SYN_SENT = "c_syn_sent"
-
-    CLOSING_STATE_FIN_WAIT_1 = "cl_fin_wait_1"
-    CLOSING_STATE_FIN_WAIT_2 = "cl_fin_wait_2"
-    CLOSING_STATE_CLOSING = "cl_closing"
-    CLOSING_STATE_TIME_WAIT = "cl_time_wait"
-
     SERVER_STATE_SYN_RCVD = "s_syn_rcvd"
 
-    CLOSING_STATE_CLOSE_WAIT = "cl_close_wait"
-    CLOSING_STATE_LAST_ACK = "cl_last_ack"
+    CLOSING_FIN_SENT = "fin_sent"
 
     CLIENT = "client"
     SERVER = "server"
 
     TIMEOUT_TIMER = 10
     QUIET_TIMER = 10
+    GARBAGE_TIMER = 30 + QUIET_TIMER
 
     def __init__(self, pkt):
         self.uuid = uuid.uuid4()
@@ -76,10 +70,17 @@ class TCPSession():
 
         self.upstream_payload = ""
         self.downstream_payload = ""
+
+        self.client_fin_ack = 0
+        self.server_fin_ack = 0
+        self.last_ack_seq = 0
+
+        self.reqeuest_size = 0
         self.httpRequest = None
 
         self.timeoutTimer = eventlet.spawn_after(self.TIMEOUT_TIMER, self.handleTimeout)
         self.quietTimer = None
+        self.garbageTimer = None
 
 
     def handleQuietTimerTimeout(self):
@@ -94,66 +95,57 @@ class TCPSession():
     def handleTimeout(self):
         print 'timeout occured for ' + str(self)
         self.state = self.STATE_TIMEOUT_TIME_WAIT
+        if self.quietTimer:
+            self.quietTimer.kill()
         self.quietTimer = eventlet.spawn_after(self.QUIET_TIMER, self.handleQuietTimerTimeout)
 
     def handleReset(self):
         self.state = self.STATE_CLOSED_RESET_TIME_WAIT
-        self.timeoutTimer.kill()
+        if self.timeoutTimer:
+            self.timeoutTimer.kill()
+        if self.quietTimer:
+            self.quietTimer.kill()
         self.quietTimer = eventlet.spawn_after(self.QUIET_TIMER, self.handleQuietTimerTimeout)
 
-    def handleClosing(self, flags, from_client):
-        if from_client:
-            #INITIATOR is server
-            if self.client_state == self.STATE_ESTABLISHED:
-                if flags & (tcp.TCP_FIN | tcp.TCP_ACK):
-                    self.client_state = self.CLOSING_STATE_LAST_ACK
-                elif flags & tcp.TCP_ACK:
-                    self.client_state = self.CLOSING_STATE_CLOSE_WAIT
-                    self.server_state = self.CLOSING_STATE_FIN_WAIT_2
-            #INITIATOR is server
-            elif self.client_state == self.CLOSING_STATE_CLOSE_WAIT:
-                if flags & tcp.TCP_FIN:
-                    self.client_state = self.CLOSING_STATE_LAST_ACK
-            #INITIATOR is client
-            elif self.client_state == self.CLOSING_STATE_FIN_WAIT_1:
-                if self.server_state == self.CLOSING_STATE_LAST_ACK:
-                    if flags & tcp.TCP_ACK:
-                        self.client_state = self.CLOSING_STATE_TIME_WAIT
-                        self.server_state = self.STATE_CLOSED
-                        self.state = self.STATE_TIME_WAIT
-            #INITIATOR is client
-            elif self.client_state == self.CLOSING_STATE_FIN_WAIT_2:
-                if self.server_state == self.CLOSING_STATE_LAST_ACK:
-                    if flags & tcp.TCP_ACK:
-                        self.client_state = self.CLOSING_STATE_TIME_WAIT
-                        self.server_state = self.STATE_CLOSED
-                        self.state = self.STATE_TIME_WAIT
+    def processPayload(self, p):
+        self.upstream_payload += p
+        if self.upstream_payload.strip() == "":
+            print 'Payload is empty line, not parsing'
         else:
-            #INITIATOR is client
-            if self.server_state == self.STATE_ESTABLISHED:
-                if flags & (tcp.TCP_FIN | tcp.TCP_ACK):
-                    self.server_state = self.CLOSING_STATE_LAST_ACK
-                elif flags & tcp.TCP_ACK:
-                    self.server_state = self.CLOSING_STATE_CLOSE_WAIT
-                    self.client_state = self.CLOSING_STATE_FIN_WAIT_2
-            #INITIATOR is client
-            elif self.server_state == self.CLOSING_STATE_CLOSE_WAIT:
-                if flags & tcp.TCP_FIN:
-                    self.server_state = self.CLOSING_STATE_LAST_ACK
-            #INITIATOR is server
-            elif self.server_state == self.CLOSING_STATE_FIN_WAIT_1:
-                if self.client_state == self.CLOSING_STATE_LAST_ACK:
-                    if flags & tcp.TCP_ACK:
-                        self.server_state = self.CLOSING_STATE_TIME_WAIT
-                        self.client_state = self.STATE_CLOSED
-                        self.state = self.STATE_TIME_WAIT
-            #INITIATOR is server
-            elif self.server_state == self.CLOSING_STATE_FIN_WAIT_2:
-                if self.client_state == self.CLOSING_STATE_LAST_ACK:
-                    if flags & tcp.TCP_ACK:
-                        self.server_state = self.CLOSING_STATE_TIME_WAIT
-                        self.client_state = self.STATE_CLOSED
-                        self.state = self.STATE_TIME_WAIT
+            self.httpRequest = HttpRequest(self.upstream_payload)
+            if self.httpRequest.error_code:
+                print 'failed to parse HTTP request, we cant chose SE to deliver content'
+            else:
+                self.reqeuest_size = len(self.upstream_payload)
+                print 'Payload is HTTP, Request Line is'
+                print self.httpRequest.raw_requestline
+        self.upstream_payload = ""
+
+    def handleGarbage(self):
+        if self.STATE_ESTABLISHED not in [self.client_state, self.server_state]:
+            print 'Due to retransmission state did not close, however none of the client/server is in established state. CLosing and cleaning up garbage'
+            self.state = self.STATE_CLOSED
+
+    def handleClosing(self, flags, from_client, p, seq, ack):
+        if self.garbageTimer is None:
+            self.garbageTimer = eventlet.spawn_after(self.GARBAGE_TIMER, self.handleGarbage)
+
+        if from_client:
+            if flags & tcp.TCP_FIN:
+                self.client_state = self.CLOSING_FIN_SENT
+                self.client_fin_ack = seq + len(p) + 1 if p else seq + 1
+            if self.server_state == self.CLOSING_FIN_SENT and ack == self.server_fin_ack and flags & tcp.TCP_ACK:
+                self.server_state = self.STATE_CLOSED
+                if self.client_state == self.STATE_CLOSED:
+                    self.state = self.STATE_TIME_WAIT
+        else:
+            if flags & tcp.TCP_FIN:
+                self.server_state = self.CLOSING_FIN_SENT
+                self.server_fin_ack = seq + len(p) + 1 if p else seq + 1
+            if self.client_state == self.CLOSING_FIN_SENT and ack == self.client_fin_ack and flags & tcp.TCP_ACK:
+                self.client_state = self.STATE_CLOSED
+                if self.server_state == self.STATE_CLOSED:
+                    self.state = self.STATE_TIME_WAIT
 
     def handlePacket(self, pkt):
         e = None
@@ -178,6 +170,8 @@ class TCPSession():
                 if self.server_state is None:
                     if t.bits & tcp.TCP_SYN:
                         print 'Retransmission from client occurred'
+                    elif t.bits & tcp.TCP_RST:
+                        self.handleReset()
                 elif self.server_state == self.SERVER_STATE_SYN_RCVD:
                     if t.bits & tcp.TCP_SYN:
                         print 'Retransmission from client occurred'
@@ -202,35 +196,23 @@ class TCPSession():
             if from_client:
                 if t.bits & tcp.TCP_FIN:
                     self.state = self.STATE_CLOSING
-                    self.client_state = self.CLOSING_STATE_FIN_WAIT_1
+                    self.handleClosing(t.bits, from_client, p, t.seq, t.ack)
                 elif t.bits & tcp.TCP_RST:
                     self.handleReset()
                 elif t.bits & tcp.TCP_PSH:
                     if p:
-                        self.upstream_payload += p
-                        print self.upstream_payload
-                        self.httpRequest = HttpRequest(self.upstream_payload)
-                        print self.httpRequest
-                        if self.httpRequest.error_code:
-                            print 'failed to parse HTTP request, we cant chose SE to deliver content'
-                        else:
-                            print self.httpRequest.raw_requestline
-                        self.upstream_payload = ""
-                    else:
-                        print 'PUSH set but no payload sent by client'
+                        self.processPayload(p)
                 elif t.bits & tcp.TCP_ACK:
-                    print 'Part of request arrived'
                     self.upstream_payload += p
             else:
-                if t.bits & (tcp.TCP_FIN):
+                if t.bits & tcp.TCP_FIN:
                     self.state = self.STATE_CLOSING
-                    self.server_state = self.CLOSING_STATE_FIN_WAIT_1
-                else:
-                    pass
+                    self.handleClosing(t.bits, from_client, p, t.seq, t.ack)
 
         elif self.state == self.STATE_CLOSING:
-            self.handleClosing(t.bits, from_client)
+            self.handleClosing(t.bits, from_client, p, t.seq, t.ack)
             if self.state == self.STATE_TIME_WAIT:
+                self.garbageTimer.kill()
                 self.quietTimer = eventlet.spawn_after(self.QUIET_TIMER, self.handleQuietTimerTimeout)
 
         return pkt

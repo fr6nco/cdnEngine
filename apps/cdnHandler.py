@@ -100,8 +100,14 @@ class CdnHandler(app_manager.RyuApp):
             self.ofHelper.add_flow(datapath, 3, match, actions, CONF.cdn.table, CONF.cdn.cookie_ip)
 
             # packet in handled on exact IP and TCP port match from request router
+            match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, ipv4_dst=CONF.cdn.rr_ip_address,
+                                    ip_proto=in_proto.IPPROTO_TCP, tcp_dst=CONF.cdn.rr_port)
+            actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
+            self.ofHelper.add_flow(datapath, 4, match, actions, CONF.cdn.table, CONF.cdn.cookie_rr)
+
+            # packet in handled on exact IP and TCP port match from request router
             match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, ipv4_src=CONF.cdn.rr_ip_address,
-                                    ip_proto=in_proto.IPPROTO_TCP)
+                                    ip_proto=in_proto.IPPROTO_TCP, tcp_src=CONF.cdn.rr_port)
             actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
             self.ofHelper.add_flow(datapath, 4, match, actions, CONF.cdn.table, CONF.cdn.cookie_rr)
         else:
@@ -116,7 +122,8 @@ class CdnHandler(app_manager.RyuApp):
             self.ofHelper.add_flow(datapath, 2, match, actions, CONF.cdn.table, CONF.cdn.cookie_ip)
 
             # packet in handled on exact IP and TCP port match for request router
-            match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, ipv4_dst=CONF.cdn.rr_ip_address, ip_proto=in_proto.IPPROTO_TCP)
+            match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, ipv4_dst=CONF.cdn.rr_ip_address,
+                                    ip_proto=in_proto.IPPROTO_TCP, tcp_dst=CONF.cdn.rr_port)
             actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
             self.ofHelper.add_flow(datapath, 3, match, actions, CONF.cdn.table, CONF.cdn.cookie_rr)
 
