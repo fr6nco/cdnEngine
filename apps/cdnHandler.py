@@ -9,14 +9,35 @@ from ryu.lib.packet import ether_types
 from ryu.lib.packet import arp
 from ryu.lib.packet import in_proto
 from ryu.lib.packet import icmp
+from socket import error as SocketError
+from tinyrpc.exc import InvalidReplyError
+
+from ryu.app.wsgi import (
+    ControllerBase,
+    WSGIApplication,
+    websocket,
+    WebSocketRPCClient,
+    WebSocketRPCServer,
+    rpc_public
+)
+from ryu.base import app_manager
+from ryu.topology import event, switches
+from ryu.controller.handler import set_ev_cls
+
+url = '/cdnhandler/ws'
 
 from ryu import cfg
 CONF = cfg.CONF
 
 from libs.ofProtoHelper.ofprotoHelper import ofProtoHelper
-from libs.tcp_engine.tcp_handler import TCPSession, TCPHandler
+from libs.tcp_engine.tcp_handler import TCPHandler
 
 class CdnHandler(app_manager.RyuApp):
+    _CONTEXTS = {
+        'wsgi': WSGIApplication,
+        'switches': switches.Switches
+    }
+
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
     opts = [
         cfg.IntOpt('priority',
@@ -56,6 +77,14 @@ class CdnHandler(app_manager.RyuApp):
         self.tcpHandler = TCPHandler()
         self.switches = {}
         self.arpTable = {}
+
+        self.rpc_clients = []
+        self.rpc_servers = []
+
+        wsgi = kwargs['wsgi']
+        wsgi.register(WsCDNEndpoint, data={'app': self})
+        self.dpswitches = kwargs['switches']
+
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
@@ -189,5 +218,22 @@ class CdnHandler(app_manager.RyuApp):
             elif protocol.protocol_name == 'udp':
                 self.ofHelper.send_icmp_port_unreachable(datapath=datapath, old_pkt=pkt, output=in_port)
 
+    @rpc_public
+    def hello(self):
+        print 'yes hello called somehow with rpc'
+        return 'hello'
 
+
+class WsCDNEndpoint(ControllerBase):
+    def __init__(self, req, link, data, **config):
+        super(WsCDNEndpoint, self).__init__(
+            req, link, data, **config)
+        self.app = data['app']
+
+    @websocket('wscdn', url)
+    def _websocket_handler(self, ws):
+        rpc_server = WebSocketRPCServer(ws, self.app)
+        self.app.rpc_servers.append(rpc_server)
+        rpc_server.serve_forever()
+        print self.app.rpc_servers
 

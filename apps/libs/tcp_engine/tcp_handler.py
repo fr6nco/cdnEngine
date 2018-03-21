@@ -1,6 +1,3 @@
-import random
-import numpy as np
-from ryu.lib.packet import packet
 from ryu.lib.packet import ethernet, ipv4, tcp, ether_types
 import eventlet
 import uuid
