@@ -1,16 +1,9 @@
-from ryu.base import app_manager
 from ryu.controller import ofp_event
 from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
-from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
 from ryu.lib.packet import packet
-from ryu.lib.packet import ethernet
 from ryu.lib.packet import ether_types
 from ryu.lib.packet import arp
-from ryu.lib.packet import in_proto
-from ryu.lib.packet import icmp
-from socket import error as SocketError
-from tinyrpc.exc import InvalidReplyError
 
 from ryu.app.wsgi import (
     ControllerBase,
@@ -23,14 +16,14 @@ from ryu.app.wsgi import (
 from ryu.base import app_manager
 from ryu.topology import event, switches
 from ryu.controller.handler import set_ev_cls
-
-url = '/cdnhandler/ws'
-
 from ryu import cfg
 CONF = cfg.CONF
 
+from libs.requestRouter.requestRouter import RequestRouter, ServiceEngine
 from libs.ofProtoHelper.ofprotoHelper import ofProtoHelper
 from libs.tcp_engine.tcp_handler import TCPHandler
+
+url = '/cdnhandler/ws'
 
 class CdnHandler(app_manager.RyuApp):
     _CONTEXTS = {
@@ -85,6 +78,8 @@ class CdnHandler(app_manager.RyuApp):
         wsgi.register(WsCDNEndpoint, data={'app': self})
         self.dpswitches = kwargs['switches']
 
+        self.requestrouter = RequestRouter()
+
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
@@ -137,7 +132,6 @@ class CdnHandler(app_manager.RyuApp):
             out_port = self.arpTable[ip]['in_port']
 
         return outdatapath, out_port
-
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
@@ -220,8 +214,23 @@ class CdnHandler(app_manager.RyuApp):
 
     @rpc_public
     def hello(self):
-        print 'yes hello called somehow with rpc'
         return 'hello'
+
+    @rpc_public
+    def getselist(self):
+        return self.requestrouter.getServiceEngines()
+
+    @rpc_public
+    def registerse(self, ip, port):
+        se = ServiceEngine(ip, port)
+        self.requestrouter.addServiceEngine(se)
+        return self.requestrouter.getServiceEngines()
+
+    @rpc_public
+    def delse(self, ip, port):
+        self.requestrouter.delse(ip, port)
+        return self.requestrouter.getServiceEngines()
+
 
 
 class WsCDNEndpoint(ControllerBase):
@@ -236,4 +245,3 @@ class WsCDNEndpoint(ControllerBase):
         self.app.rpc_servers.append(rpc_server)
         rpc_server.serve_forever()
         print self.app.rpc_servers
-
