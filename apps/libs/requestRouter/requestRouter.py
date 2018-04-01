@@ -1,7 +1,9 @@
 class RequestRouter:
-    def __init__(self):
+    def __init__(self, ip, port):
         self.serviceEngines = []
         self.clientSessions = {}
+        self.ip = ip
+        self.port = port
 
     def addServiceEngine(self, se):
         exists = False
@@ -9,7 +11,7 @@ class RequestRouter:
             if ses.ip == se.ip and ses.port == se.port:
                 exists = True
 
-        if exists:
+        if not exists:
             self.serviceEngines.append(se)
 
     def getServiceEngines(self):
@@ -32,9 +34,9 @@ class RequestRouter:
     def delSesssion(self, key):
         del self.clientSessions[key]
 
-
 class ServiceEngine:
     def __init__(self, ip, port):
         self.ip = ip
         self.port = port
         self.sessions = {}
+        self.enabled = False

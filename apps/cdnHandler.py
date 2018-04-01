@@ -22,6 +22,7 @@ CONF = cfg.CONF
 from libs.requestRouter.requestRouter import RequestRouter, ServiceEngine
 from libs.ofProtoHelper.ofprotoHelper import ofProtoHelper
 from libs.tcp_engine.tcp_handler import TCPHandler
+import json
 
 url = '/cdnhandler/ws'
 
@@ -78,7 +79,7 @@ class CdnHandler(app_manager.RyuApp):
         wsgi.register(WsCDNEndpoint, data={'app': self})
         self.dpswitches = kwargs['switches']
 
-        self.requestrouter = RequestRouter()
+        self.requestrouter = None
 
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
@@ -213,24 +214,43 @@ class CdnHandler(app_manager.RyuApp):
                 self.ofHelper.send_icmp_port_unreachable(datapath=datapath, old_pkt=pkt, output=in_port)
 
     @rpc_public
-    def hello(self):
+    def hello(self, ip, port):
+        self.requestrouter = RequestRouter(ip, port)
+        print 'Request Router registered'
         return 'hello'
 
     @rpc_public
     def getselist(self):
-        return self.requestrouter.getServiceEngines()
+        return json.dumps(self.requestrouter.getServiceEngines())
 
     @rpc_public
     def registerse(self, ip, port):
+        print 'service engine registered'
         se = ServiceEngine(ip, port)
         self.requestrouter.addServiceEngine(se)
-        return self.requestrouter.getServiceEngines()
+        return json.dumps(self.requestrouter.getServiceEngines())
+
+    @rpc_public
+    def disablese(self, ip, port):
+        print 'service engine disabled'
+        for se in self.requestrouter.getServiceEngines():
+            if se.ip == ip and se.port == port:
+                se.enabled = False
+                'disabled'
+
+    @rpc_public
+    def enablese(self, ip, port):
+        print 'service engine enabled'
+        for se in self.requestrouter.getServiceEngines():
+            if se.ip == ip and se.port == port:
+                se.enabled = True
+                'enabled'
 
     @rpc_public
     def delse(self, ip, port):
+        print 'service engine deleted'
         self.requestrouter.delse(ip, port)
-        return self.requestrouter.getServiceEngines()
-
+        return json.dumps(self.requestrouter.getServiceEngines())
 
 
 class WsCDNEndpoint(ControllerBase):
