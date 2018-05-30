@@ -43,6 +43,16 @@ class ofProtoHelper():
                                     match=match, instructions=inst)
         datapath.send_msg(mod)
 
+    def del_flow_by_cookie(self, datapath, table_id, cookie):
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+
+        mod = parser.OFPFlowMod(datapath=datapath, table_id=ofproto.OFPTT_ALL,
+                                cookie=cookie, cookie_mask=0xffffffffffffffff, command=ofproto.OFPFC_DELETE,
+                                out_port=ofproto.OFPP_ANY,
+                                out_group=ofproto.OFPG_ANY)
+        datapath.send_msg(mod)
+
     ## Send ARP request
     def send_arp_request(self, datapath, src_mac, src_ip, dst_ip, output):
         ethertype_ether = ether_types.ETH_TYPE_ARP

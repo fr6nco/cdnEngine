@@ -9,10 +9,12 @@ CONF = cfg.CONF
 class TCPSession():
     TYPE_CLIENT = "client"
     TYPE_RR = "rr"
+    TYPE_OTHER = "other"
 
-    STATE_HTTP = "http"
+    STATE_HTTP = "http" #HTTP received
+    STATE_HANDOVERED = "handovered" #handovered
 
-    # REVISION
+    # MAIN STATES
     STATE_OPENING = 'opening'
     STATE_ESTABLISHED = 'established'
     STATE_CLOSING = 'closing'
@@ -79,6 +81,9 @@ class TCPSession():
         self.quietTimer = None
         self.garbageTimer = None
 
+        self.type = None
+        self.handoverSesssion = None
+        self.isHttpProcessed = False
 
     def handleQuietTimerTimeout(self):
         print 'quiet timeout occured for ' + str(self)
@@ -88,6 +93,30 @@ class TCPSession():
             self.state = self.STATE_TIMEOUT
         elif self.state == self.STATE_CLOSED_RESET_TIME_WAIT:
             self.state = self.STATE_CLOSED_RESET
+
+    def setType(self, type):
+        print 'setting type to'
+        print type
+        self.type = type
+
+    def getType(self):
+        return self.type
+
+    def setState(self, state):
+        self.state = state
+
+    def getState(self):
+        return self.state
+
+    def requestValid(self):
+        if self.httpRequest and self.httpRequest.raw_requestline != "" and self.isHttpProcessed is False:
+            self.isHttpProcessed = True
+            return True
+        else:
+            return False
+
+    def getRawRequest(self):
+        return self.httpRequest.raw_requestline
 
     def handleTimeout(self):
         print 'timeout occured for ' + str(self)
@@ -111,17 +140,21 @@ class TCPSession():
         else:
             self.httpRequest = HttpRequest(self.upstream_payload)
             if self.httpRequest.error_code:
-                print 'failed to parse HTTP request, we cant chose SE to deliver content'
+                print 'failed to parse HTTP request'
             else:
                 self.reqeuest_size = len(self.upstream_payload)
-                print 'Payload is HTTP, Request Line is'
-                print self.httpRequest.raw_requestline
+
         self.upstream_payload = ""
+
+    def setHandoverSesssion(self, session):
+        print 'Matching session is'
+        print session
+        self.handoverSesssion = session
 
     def handleGarbage(self):
         if self.STATE_ESTABLISHED not in [self.client_state, self.server_state]:
             print 'Due to retransmission and bad packet ordering state did not close, ' \
-                  'however none of the client/server is in established state. CLosing and cleaning up garbage'
+                  'however none of the client/server is in established state. Closing and cleaning up garbage'
             self.state = self.STATE_CLOSED
 
     def handleClosing(self, flags, from_client, p, seq, ack):
@@ -205,7 +238,8 @@ class TCPSession():
                     if p:
                         self.processPayload(p)
                 elif t.bits & tcp.TCP_ACK:
-                    self.upstream_payload += p
+                    if p is not None:
+                        self.upstream_payload += p
             else:
                 if t.bits & tcp.TCP_FIN:
                     self.state = self.STATE_CLOSING
@@ -220,13 +254,13 @@ class TCPSession():
         return pkt
 
     def __repr__(self):
-        return "Session from {}:{} to {}:{} in state {}".format(self.src_ip, self.src_port, self.dst_ip, self.dst_port, self.state)
-
+        return "Session from {}:{} to {}:{} in state {} type {}".format(self.src_ip, self.src_port, self.dst_ip, self.dst_port, self.state, self.type)
 
 class TCPHandler():
     def __init__(self):
         self.sessions = {}
         self.eventloop = eventlet.spawn_after(1, self.clearSessions)
+        self.request_routers = []
 
     def clearSessions(self):
         for key in self.sessions.keys():
@@ -257,15 +291,25 @@ class TCPHandler():
         if key not in self.sessions:
             if key_rev not in self.sessions:
                 sess = TCPSession(pkt)
+                # sess.setType(self.request_router.determineType(sess))
                 self.sessions[key] = sess
                 retpkt = self.sessions[key].handlePacket(pkt)
             else:
                 retpkt = self.sessions[key_rev].handlePacket(pkt)
+                if self.sessions[key_rev].requestValid():
+                    handoversess = self.request_router.getMatchingSesssion('10.10.0.1', self.sessions[key_rev].getRawRequest())
+                    self.sessions[key_rev].setHandoverSesssion(handoversess)
         else:
             retpkt = self.sessions[key].handlePacket(pkt)
-
-        print self.sessions
+            if self.sessions[key].requestValid():
+                handoversess = self.request_router.getMatchingSesssion('10.10.0.1', self.sessions[key].getRawRequest())
+                self.sessions[key].setHandoverSesssion(handoversess)
 
         return retpkt
 
+    def registerRequestRouter(self, request_router):
+        self.request_routers.append(request_router)
+
+    def unregisterRequestRouter(self, request_router):
+        self.request_routers.remove(request_router)
 

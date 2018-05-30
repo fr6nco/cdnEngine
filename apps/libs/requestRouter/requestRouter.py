@@ -1,14 +1,45 @@
+from apps.libs.tcp_engine.tcp_handler import TCPSession
+from ryu import cfg
+CONF = cfg.CONF
+
+import random
+
 class RequestRouter:
     def __init__(self, ip, port):
         self.serviceEngines = []
         self.clientSessions = {}
+        self.rrSesssions = {}
         self.ip = ip
         self.port = port
+        self.cookie = random.randint(1, int(CONF.cdn.cookie_tcp_sess_max)) << int(CONF.cdn.cookie_tcp_shift)
+
+    def determineType(self, session):
+        for se in self.serviceEngines:
+            if se.ip == session.dst_ip and se.port == session.dst_port:
+                if session.dst_ip not in self.rrSesssions:
+                    self.rrSesssions[session.dst_ip] = []
+                self.rrSesssions[session.dst_ip].append(session)
+                print self.rrSesssions
+                print 'SESSSION ADDED'
+                return TCPSession.TYPE_RR
+
+        if self.ip == session.dst_ip and self.port == session.dst_port:
+            if session.src_ip not in self.clientSessions:
+                self.clientSessions[session.src_ip] = []
+            self.clientSessions[session.src_ip].append(session)
+            return TCPSession.TYPE_CLIENT
+        else:
+            return TCPSession.TYPE_OTHER
+
+    def getMatchingSesssion(self, source_ip, request):
+        se = self.serviceEngines[0]
+        sess = self.rrSesssions[se.ip].pop()
+        return sess
 
     def addServiceEngine(self, se):
         exists = False
         for ses in self.serviceEngines:
-            if ses.ip == se.ip and ses.port == se.port:
+            if ses.name == se.name:
                 exists = True
 
         if not exists:
@@ -16,6 +47,13 @@ class RequestRouter:
 
     def getServiceEngines(self):
         return self.serviceEngines
+
+    def serializeServiceEngines(self):
+        ses = []
+        for se in self.serviceEngines:
+            s = {se.name: {"ip": se.ip, "port": se.port}}
+            ses.append(s)
+        return ses
 
     def getse(self, ip, port):
         for se in self.serviceEngines:
@@ -35,7 +73,8 @@ class RequestRouter:
         del self.clientSessions[key]
 
 class ServiceEngine:
-    def __init__(self, ip, port):
+    def __init__(self, name, ip, port):
+        self.name = name
         self.ip = ip
         self.port = port
         self.sessions = {}

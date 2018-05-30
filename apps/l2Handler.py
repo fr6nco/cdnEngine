@@ -42,16 +42,15 @@ class L2Handler(app_manager.RyuApp):
     def switch_features_handler(self, ev):
         datapath = ev.msg.datapath
 
-        if datapath.id != CONF.cdn.sw_dpid:
-            ofproto = datapath.ofproto
-            parser = datapath.ofproto_parser
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
 
-            match = parser.OFPMatch()
-            actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
-                                              ofproto.OFPCML_NO_BUFFER)]
+        match = parser.OFPMatch()
+        actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
+                                          ofproto.OFPCML_NO_BUFFER)]
 
-            self.ofHelper.add_goto(datapath, CONF.l2.priority, match, 0, CONF.l2.table)
-            self.ofHelper.add_flow(datapath, 0, match, actions, CONF.l2.table, cookie=CONF.l2.cookie_arp)
+        self.ofHelper.add_goto(datapath, CONF.l2.priority, match, 0, CONF.l2.table)
+        self.ofHelper.add_flow(datapath, 0, match, actions, CONF.l2.table, cookie=CONF.l2.cookie_arp)
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
