@@ -20,7 +20,7 @@ from ryu.controller.handler import set_ev_cls
 from ryu import cfg
 CONF = cfg.CONF
 
-from libs.requestRouter.requestRouter import RequestRouter, ServiceEngine
+from libs.requestRouter.requestRouter import RequestRouter, ServiceEngine, RequestRouterNotFoundException, ServiceEngineNotFoundException
 from libs.ofProtoHelper.ofprotoHelper import ofProtoHelper
 from libs.tcp_engine.tcp_handler import TCPHandler
 import json
@@ -175,6 +175,9 @@ class CdnHandler(app_manager.RyuApp):
         self.tcpHandler.registerRequestRouter(rr)
         self.rrs.append(rr)
 
+        self.logger.info('RR registered to list')
+        self.logger.info(self.rrs)
+
         for dpid, dp in self.dpswitches.dps.iteritems():
             if dpid == CONF.cdn.sw_dpid:
                 self.loadRequestRouteronDP(dp.ofproto_parser, dp.ofproto, dp, rr)
@@ -187,49 +190,85 @@ class CdnHandler(app_manager.RyuApp):
             if dpid == CONF.cdn.sw_dpid:
                 self.unloadRequestRouterofDP(dp, rr)
 
+    def getRRbyCookie(self, cookie):
+        self.logger.info(cookie)
+        self.logger.info(self.rrs)
+        for rr in self.rrs:
+            if rr.cookie == cookie:
+                return rr
+        raise RequestRouterNotFoundException
+
     @rpc_public
     def hello(self, ip, port):
-        self.logger.info('Request Router with http params {}:{} registering'.format(ip, port))
-        rr = RequestRouter(ip, port)
-        self.registerRR(rr)
-        return rr.cookie
+        try:
+            self.logger.info('Request Router with http params {}:{} registering'.format(ip, port))
+            rr = RequestRouter(ip, port)
+            self.registerRR(rr)
+        except Exception as e:
+            return {"code": 500, "error": e.message}
+        return {"code": 200, "cookie": rr.cookie}
 
-    # @rpc_public
-    # def getselist(self):
-    #     return self.requestrouter.serializeServiceEngines()
+    @rpc_public
+    def getselist(self, cookie):
+        try:
+            rr = self.getRRbyCookie(cookie)
+        except RequestRouterNotFoundException:
+            return {'code': 404, 'error': 'rr not found'}
+        return {'code': 200, 'message': ", ".join(rr.serializeServiceEngines())}
 
     @rpc_public
     def registerse(self, cookie, name, ip, port):
-        print 'service engine registered'
-        se = ServiceEngine(name, ip, port)
-        self.requestrouter.addServiceEngine(se)
-        return self.requestrouter.serializeServiceEngines()
+        try:
+            rr = self.getRRbyCookie(cookie)
+            se = ServiceEngine(name, ip, port)
+            rr.addServiceEngine(se)
+        except RequestRouterNotFoundException:
+            return {'code': 404, 'error': 'rr not found'}
+        except Exception as e:
+            return {'code': 500, 'error': e.message}
+        return {'code': 200, 'message': 'registered'}
 
-    # @rpc_public
-    # def disablese(self, name):
-    #     for se in self.requestrouter.getServiceEngines():
-    #         if se.name == name:
-    #             se.enabled = False
-    #             print 'SE Disabled'
-    #             return 'disabled'
-    #     return 'ERROR: SE not found'
-    #
-    # @rpc_public
-    # def enablese(self, name):
-    #     for se in self.requestrouter.getServiceEngines():
-    #         print se.name
-    #         if se.name == name:
-    #             se.enabled = True
-    #             print 'SE Enabled'
-    #             return 'enabled'
-    #     return 'ERROR: SE not found'
-    #
-    # @rpc_public
-    # def delse(self, ip, port):
-    #     print 'service engine deleted'
-    #     self.requestrouter.delse(ip, port)
-    #     return self.requestrouter.serializeServiceEngines()
+    @rpc_public
+    def disablese(self, cookie, name):
+        try:
+            rr = self.getRRbyCookie(cookie)
+            se = rr.getsebyname(name)
+            se.enabled = False
+        except RequestRouterNotFoundException:
+            return {'code': 404, 'error': 'rr not found'}
+        except ServiceEngineNotFoundException:
+            return {'code': 404, 'error': 'se not found'}
+        except Exception as e:
+            return {'code': 500, 'error': e.message}
+        return {'code': 200, 'message': 'disabled'}
 
+    @rpc_public
+    def enablese(self, cookie, name):
+        try:
+            rr = self.getRRbyCookie(cookie)
+            se = rr.getsebyname(name)
+            se.enabled = True
+        except RequestRouterNotFoundException:
+            return {"code": 404, "error": "rr not found"}
+        except ServiceEngineNotFoundException:
+            return {"code": 404, "error": "se not found"}
+        except Exception as e:
+            return {"code": 500, "error": e.message}
+        return {"code": 200, "message": 'enabled'}
+
+    @rpc_public
+    def delse(self, cookie, name):
+        try:
+            rr = self.getRRbyCookie(cookie)
+            rr.delse(name)
+            self.logger.info('SE deleted')
+        except RequestRouterNotFoundException:
+            return {'code': 404, 'error': 'rr not found'}
+        except ServiceEngineNotFoundException:
+            return {'code': 404, 'error': 'se not found'}
+        except Exception as e:
+            return {'code': 500, 'error': e.message}
+        return {'code': 200, 'message': 'deleted'}
 
 class WsCDNEndpoint(ControllerBase):
     def __init__(self, req, link, data, **config):
@@ -237,11 +276,10 @@ class WsCDNEndpoint(ControllerBase):
         self.app = data['app']
 
     def tracer(self, dir, context, msg):
-        print "{}: {}".format(dir, msg)
+        self.app.logger.info("{}: {}".format(dir, msg))
 
     @websocket('wscdn', url)
     def _websocket_handler(self, ws):
-        print ws.client
         rpc_server = WebSocketRPCServer(ws, self.app)
         rpc_server.trace = self.tracer
         self.app.addRPCConnection(rpc_server)

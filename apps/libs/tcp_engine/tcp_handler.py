@@ -3,6 +3,7 @@ import eventlet
 import uuid
 from ryu import cfg
 from http_handler import HttpRequest
+import logging
 
 CONF = cfg.CONF
 
@@ -84,6 +85,9 @@ class TCPSession():
         self.type = None
         self.handoverSesssion = None
         self.isHttpProcessed = False
+
+        self.logger = logging.getLogger('tcpsession')
+        self.logger.info("TCP session initiated: " + self.__repr__())
 
     def handleQuietTimerTimeout(self):
         print 'quiet timeout occured for ' + str(self)
@@ -291,19 +295,12 @@ class TCPHandler():
         if key not in self.sessions:
             if key_rev not in self.sessions:
                 sess = TCPSession(pkt)
-                # sess.setType(self.request_router.determineType(sess))
                 self.sessions[key] = sess
                 retpkt = self.sessions[key].handlePacket(pkt)
             else:
                 retpkt = self.sessions[key_rev].handlePacket(pkt)
-                if self.sessions[key_rev].requestValid():
-                    handoversess = self.request_router.getMatchingSesssion('10.10.0.1', self.sessions[key_rev].getRawRequest())
-                    self.sessions[key_rev].setHandoverSesssion(handoversess)
         else:
             retpkt = self.sessions[key].handlePacket(pkt)
-            if self.sessions[key].requestValid():
-                handoversess = self.request_router.getMatchingSesssion('10.10.0.1', self.sessions[key].getRawRequest())
-                self.sessions[key].setHandoverSesssion(handoversess)
 
         return retpkt
 

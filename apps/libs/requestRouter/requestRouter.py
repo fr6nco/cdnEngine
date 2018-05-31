@@ -3,6 +3,7 @@ from ryu import cfg
 CONF = cfg.CONF
 
 import random
+import logging
 
 class RequestRouter:
     def __init__(self, ip, port):
@@ -12,6 +13,8 @@ class RequestRouter:
         self.ip = ip
         self.port = port
         self.cookie = random.randint(1, int(CONF.cdn.cookie_tcp_sess_max)) << int(CONF.cdn.cookie_tcp_shift)
+        self.logger = logging.getLogger('requestrouter ' + self.ip + ':' + str(self.port))
+        self.logger.info("Request Router Initiated")
 
     def determineType(self, session):
         for se in self.serviceEngines:
@@ -19,8 +22,6 @@ class RequestRouter:
                 if session.dst_ip not in self.rrSesssions:
                     self.rrSesssions[session.dst_ip] = []
                 self.rrSesssions[session.dst_ip].append(session)
-                print self.rrSesssions
-                print 'SESSSION ADDED'
                 return TCPSession.TYPE_RR
 
         if self.ip == session.dst_ip and self.port == session.dst_port:
@@ -61,10 +62,15 @@ class RequestRouter:
                 return se
         return None
 
-    def delse(self, ip, port):
-        se = self.getse(ip, port)
-        if se:
-            self.serviceEngines.remove(se)
+    def getsebyname(self, name):
+        for se in self.serviceEngines:
+            if se.name == name:
+                return se
+        raise ServiceEngineNotFoundException
+
+    def delse(self, name):
+        se = self.getsebyname(name)
+        self.serviceEngines.remove(se)
 
     def addSession(self, key, session):
         self.clientSessions[key] = session
@@ -79,3 +85,9 @@ class ServiceEngine:
         self.port = port
         self.sessions = {}
         self.enabled = False
+
+class RequestRouterNotFoundException(Exception):
+    pass
+
+class ServiceEngineNotFoundException(Exception):
+    pass
