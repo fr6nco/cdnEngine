@@ -1,4 +1,4 @@
-from apps.libs.tcp_engine.tcp_handler import TCPSession
+from apps.libs.cdn_engine.tcp_handler import TCPSession
 from ryu import cfg
 CONF = cfg.CONF
 
@@ -12,7 +12,7 @@ class RequestRouter:
         self.rrSesssions = {}
         self.ip = ip
         self.port = port
-        self.cookie = random.randint(1, int(CONF.cdn.cookie_tcp_sess_max)) << int(CONF.cdn.cookie_tcp_shift)
+        self.cookie = random.randint(1, int(CONF.cdn.cookie_rr_max)) << int(CONF.cdn.cookie_rr_shift)
         self.logger = logging.getLogger('requestrouter ' + self.ip + ':' + str(self.port))
         self.logger.info("Request Router Initiated")
 
@@ -85,6 +85,9 @@ class ServiceEngine:
         self.port = port
         self.sessions = {}
         self.enabled = False
+        self.cookie = random.randint(1, int(CONF.cdn.cookie_se_max)) << int(CONF.cdn.cookie_se_shift)
+        self.logger = logging.getLogger('serviceengine ' + self.ip + ':' + str(self.port))
+        self.logger.info("Service Engine Initiated")
 
 class RequestRouterNotFoundException(Exception):
     pass

@@ -22,7 +22,8 @@ CONF = cfg.CONF
 
 from libs.requestRouter.requestRouter import RequestRouter, ServiceEngine, RequestRouterNotFoundException, ServiceEngineNotFoundException
 from libs.ofProtoHelper.ofprotoHelper import ofProtoHelper
-from libs.tcp_engine.tcp_handler import TCPHandler
+
+from libs.cdn_engine.tcp_handler import TCPHandler
 import json
 
 url = '/cdnhandler/ws'
@@ -44,12 +45,6 @@ class CdnHandler(app_manager.RyuApp):
         cfg.IntOpt('priority_rr',
                 default=1,
                 help='Priority of the flow entry in the table of the mgt sw'),
-        cfg.IntOpt('cookie_low',
-                default=1,
-                help='FLow mod cookie to use for Controller event low range'),
-        cfg.IntOpt('cookie_high',
-                default=100,
-                help='FLow mod cookie to use for Controller event high range'),
         cfg.IntOpt('sw_dpid',
                 default=66766,
                 help='Datapath ID which acts as a management switch for the CDN engine'),
@@ -60,13 +55,22 @@ class CdnHandler(app_manager.RyuApp):
                 default=16,
                 help='Cookie id Shifted by to left'),
         cfg.IntOpt('cookie_rr_max',
-                default=65535,
+                default=15,
                 help='Max Cookie ID for the RR match'),
         cfg.IntOpt('cookie_rr_shift',
-                default=8,
+                default=12,
                 help='Cookie id Shifted by to left'),
         cfg.IntOpt('priority_tcp',
                 default=2,
+                help='Priority in the table'),
+        cfg.IntOpt('cookie_se_max',
+                default=15,
+                help='Max Cookie ID for the RR match'),
+        cfg.IntOpt('cookie_se_shift',
+                default=8,
+                help='Cookie id Shifted by to left'),
+        cfg.IntOpt('priority_se',
+                default=1,
                 help='Priority in the table')
     ]
 
@@ -84,8 +88,12 @@ class CdnHandler(app_manager.RyuApp):
         wsgi.register(WsCDNEndpoint, data={'app': self})
         self.dpswitches = kwargs['switches']
 
-    def loadRequestRouteronDP(self, parser, ofproto, datapath, reqrouter=None):
-        self.logger.info('Loading CDN matches on MGT switch')
+    def loadRequestRouteronDP(self, datapath, reqrouter=None):
+        self.logger.info('Loading CDN matches on switch')
+
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+
         rrlist = [reqrouter] if reqrouter else self.rrs
 
         for rr in rrlist:
@@ -104,7 +112,31 @@ class CdnHandler(app_manager.RyuApp):
     def unloadRequestRouterofDP(self, datapath, rr):
         self.logger.info('Unloading CDN matches on MGT switch')
         self.ofHelper.del_flow_by_cookie(datapath, CONF.cdn.table, rr.cookie)
-        self.ofHelper.del_flow_by_cookie(datapath, CONF.cdn.table, rr.cookie)
+
+    def loadSeToDP(self, datapath, se, reqrouter):
+        self.logger.info('Loading SE on switch')
+
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+
+        rr = reqrouter
+
+        if se in rr.getServiceEngines():
+            #packets destined to SE from RR
+            match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, ip_proto=inet.IPPROTO_TCP, ipv4_src=rr.ip,
+                                    ipv4_dst=se.ip, tcp_dst=se.port)
+            actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
+            self.ofHelper.add_flow(datapath, CONF.cdn.priority_se, match, actions, CONF.cdn.table, se.cookie)
+
+            #packets from SE to RR
+            match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, ip_proto=inet.IPPROTO_TCP, ipv4_src=se.ip,
+                                    ipv4_dst=rr.ip, tcp_src=se.port)
+            actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
+            self.ofHelper.add_flow(datapath, CONF.cdn.priority_se, match, actions, CONF.cdn.table, se.cookie)
+
+    def unloadSEofDP(self, datapath, se):
+        self.logger.info('Unloading SE from MGT switch')
+        self.ofHelper.del_flow_by_cookie(datapath, CONF.cdn.table, se.cookie)
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
@@ -122,7 +154,7 @@ class CdnHandler(app_manager.RyuApp):
         self.ofHelper.add_goto(datapath, 0, match, CONF.cdn.table, CONF.l2.table)
 
         if datapath.id == CONF.cdn.sw_dpid:
-            self.loadRequestRouteronDP(parser, ofproto, datapath)
+            self.loadRequestRouteronDP(datapath)
 
     def getOutPort(self, ip):
         for arp, host in self.dpswitches.hosts.iteritems():
@@ -133,8 +165,11 @@ class CdnHandler(app_manager.RyuApp):
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
-        if ev.msg.cookie in range(CONF.cdn.cookie_low, CONF.cdn.cookie_high):
-            self.logger.debug('packet being handled in CDN module')
+        type = None
+        if ev.msg.cookie & (int(CONF.cdn.cookie_rr_max) << int(CONF.cdn.cookie_rr_shift)) == ev.msg.cookie:
+            type = 'rr'
+        elif ev.msg.cookie & (int(CONF.cdn.cookie_se_max) << int(CONF.cdn.cookie_se_shift)) == ev.msg.cookie:
+            type = 'se'
         else:
             return
 
@@ -143,7 +178,6 @@ class CdnHandler(app_manager.RyuApp):
         if ev.msg.msg_len < ev.msg.total_len:
             self.logger.debug("packet truncated: only %s of %s bytes",
                               ev.msg.msg_len, ev.msg.total_len)
-        
         msg = ev.msg
         pkt = packet.Packet(msg.data)
 
@@ -157,10 +191,11 @@ class CdnHandler(app_manager.RyuApp):
                 dst_ip = protocol.dst
                 src_ip = protocol.src
             elif protocol.protocol_name == 'tcp':
-                out_pkt = self.tcpHandler.handleIncoming(pkt)
+                out_pkt = self.tcpHandler.handleIncoming(pkt, type)
                 if out_pkt:
                     out_dp, out_port = self.getOutPort(dst_ip)
-                    self.ofHelper.send_packet_out(datapath=out_dp, pkt=out_pkt, output=out_port)
+                    if out_dp is not None:
+                        self.ofHelper.send_packet_out(datapath=out_dp, pkt=out_pkt, output=out_port)
 
     def addRPCConnection(self, rpcconnection):
         self.incoming_rpc_connections.append(rpcconnection)
@@ -169,6 +204,8 @@ class CdnHandler(app_manager.RyuApp):
         self.incoming_rpc_connections.remove(rpcconnection)
         for rr in self.rrs:
             if rr.ip == rpcconnection.transport.ws.environ['REMOTE_ADDR']:
+                for se in rr.getServiceEngines():
+                    self.unregisterSE(se)
                 self.unregisterRR(rr)
 
     def registerRR(self, rr):
@@ -180,7 +217,12 @@ class CdnHandler(app_manager.RyuApp):
 
         for dpid, dp in self.dpswitches.dps.iteritems():
             if dpid == CONF.cdn.sw_dpid:
-                self.loadRequestRouteronDP(dp.ofproto_parser, dp.ofproto, dp, rr)
+                self.loadRequestRouteronDP(dp, rr)
+
+    def registerSE(self, se, rr=None):
+        for dpid, dp in self.dpswitches.dps.iteritems():
+            if dpid == CONF.cdn.sw_dpid:
+                self.loadSeToDP(dp, se, rr)
 
     def unregisterRR(self, rr):
         self.tcpHandler.unregisterRequestRouter(rr)
@@ -190,6 +232,11 @@ class CdnHandler(app_manager.RyuApp):
             if dpid == CONF.cdn.sw_dpid:
                 self.unloadRequestRouterofDP(dp, rr)
 
+    def unregisterSE(self, se):
+        for dpid, dp in self.dpswitches.dps.iteritems():
+            if dpid == CONF.cdn.sw_dpid:
+                self.unloadSEofDP(dp, se)
+
     def getRRbyCookie(self, cookie):
         self.logger.info(cookie)
         self.logger.info(self.rrs)
@@ -198,6 +245,12 @@ class CdnHandler(app_manager.RyuApp):
                 return rr
         raise RequestRouterNotFoundException
 
+    def retresult(self, code, obj):
+        return json.dumps({
+            'code': code,
+            'message': obj
+        })
+
     @rpc_public
     def hello(self, ip, port):
         try:
@@ -205,8 +258,8 @@ class CdnHandler(app_manager.RyuApp):
             rr = RequestRouter(ip, port)
             self.registerRR(rr)
         except Exception as e:
-            return {"code": 500, "error": e.message}
-        return {"code": 200, "cookie": rr.cookie}
+            return self.retresult(500, e.message)
+        return self.retresult(200, rr.cookie)
 
     @rpc_public
     def getselist(self, cookie):
@@ -222,11 +275,12 @@ class CdnHandler(app_manager.RyuApp):
             rr = self.getRRbyCookie(cookie)
             se = ServiceEngine(name, ip, port)
             rr.addServiceEngine(se)
+            self.registerSE(se, rr)
         except RequestRouterNotFoundException:
-            return {'code': 404, 'error': 'rr not found'}
+            return self.retresult(404, 'rr not found')
         except Exception as e:
-            return {'code': 500, 'error': e.message}
-        return {'code': 200, 'message': 'registered'}
+            return self.retresult(500, e.message)
+        return self.retresult(200, 'registered')
 
     @rpc_public
     def disablese(self, cookie, name):
@@ -235,12 +289,12 @@ class CdnHandler(app_manager.RyuApp):
             se = rr.getsebyname(name)
             se.enabled = False
         except RequestRouterNotFoundException:
-            return {'code': 404, 'error': 'rr not found'}
+            return self.retresult(404, 'rr not found')
         except ServiceEngineNotFoundException:
-            return {'code': 404, 'error': 'se not found'}
+            return self.retresult(404, 'se not found')
         except Exception as e:
-            return {'code': 500, 'error': e.message}
-        return {'code': 200, 'message': 'disabled'}
+            return self.retresult(500, e.message)
+        return self.retresult(200, 'disabled')
 
     @rpc_public
     def enablese(self, cookie, name):
@@ -249,12 +303,12 @@ class CdnHandler(app_manager.RyuApp):
             se = rr.getsebyname(name)
             se.enabled = True
         except RequestRouterNotFoundException:
-            return {"code": 404, "error": "rr not found"}
+            return self.retresult(404, 'rr not found')
         except ServiceEngineNotFoundException:
-            return {"code": 404, "error": "se not found"}
+            return self.retresult(404, 'se not found')
         except Exception as e:
-            return {"code": 500, "error": e.message}
-        return {"code": 200, "message": 'enabled'}
+            return self.retresult(500, e.message)
+        return self.retresult(200, 'enabled')
 
     @rpc_public
     def delse(self, cookie, name):
@@ -263,12 +317,12 @@ class CdnHandler(app_manager.RyuApp):
             rr.delse(name)
             self.logger.info('SE deleted')
         except RequestRouterNotFoundException:
-            return {'code': 404, 'error': 'rr not found'}
+            return self.retresult(404, 'rr not found')
         except ServiceEngineNotFoundException:
-            return {'code': 404, 'error': 'se not found'}
+            return self.retresult(404, 'se not found')
         except Exception as e:
-            return {'code': 500, 'error': e.message}
-        return {'code': 200, 'message': 'deleted'}
+            return self.retresult(500, e.message)
+        return self.retresult(200, 'deleted')
 
 class WsCDNEndpoint(ControllerBase):
     def __init__(self, req, link, data, **config):

@@ -289,7 +289,7 @@ class TCPHandler():
 
         return src_ip+":"+str(src_port)+"-"+dst_ip+":"+str(dst_port), dst_ip+":"+str(dst_port)+"-"+src_ip+":"+str(src_port)
 
-    def handleIncoming(self, pkt):
+    def handleIncoming(self, pkt, type):
         key, key_rev = self.getKeys(pkt)
 
         if key not in self.sessions:
