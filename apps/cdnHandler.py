@@ -23,7 +23,7 @@ CONF = cfg.CONF
 from libs.requestRouter.requestRouter import RequestRouter, ServiceEngine, RequestRouterNotFoundException, ServiceEngineNotFoundException
 from libs.ofProtoHelper.ofprotoHelper import ofProtoHelper
 
-from libs.cdn_engine.tcp_handler import TCPHandler
+from libs.cdn_engine.session_handler import SessionHandler
 import json
 
 url = '/cdnhandler/ws'
@@ -80,7 +80,7 @@ class CdnHandler(app_manager.RyuApp):
         CONF.register_opts(self.opts, group='cdn')
         self.rrs = []
         self.ofHelper = ofProtoHelper()
-        self.tcpHandler = TCPHandler()
+        self.sessionhandler = SessionHandler()
 
         self.incoming_rpc_connections = []
 
@@ -191,7 +191,7 @@ class CdnHandler(app_manager.RyuApp):
                 dst_ip = protocol.dst
                 src_ip = protocol.src
             elif protocol.protocol_name == 'tcp':
-                out_pkt = self.tcpHandler.handleIncoming(pkt, type)
+                out_pkt = self.sessionhandler.handleIncoming(pkt, type, ev.msg.cookie)
                 if out_pkt:
                     out_dp, out_port = self.getOutPort(dst_ip)
                     if out_dp is not None:
@@ -209,7 +209,7 @@ class CdnHandler(app_manager.RyuApp):
                 self.unregisterRR(rr)
 
     def registerRR(self, rr):
-        self.tcpHandler.registerRequestRouter(rr)
+        self.sessionhandler.registerRequestRouter(rr)
         self.rrs.append(rr)
 
         self.logger.info('RR registered to list')
@@ -225,7 +225,7 @@ class CdnHandler(app_manager.RyuApp):
                 self.loadSeToDP(dp, se, rr)
 
     def unregisterRR(self, rr):
-        self.tcpHandler.unregisterRequestRouter(rr)
+        self.sessionhandler.unregisterRequestRouter(rr)
         self.rrs.remove(rr)
 
         for dpid, dp in self.dpswitches.dps.iteritems():
@@ -260,6 +260,18 @@ class CdnHandler(app_manager.RyuApp):
         except Exception as e:
             return self.retresult(500, e.message)
         return self.retresult(200, rr.cookie)
+
+    @rpc_public
+    def goodbye(self, cookie):
+        try:
+            self.logger.info('Request router deregistering with cookie {}'.format(cookie))
+            rr = self.getRRbyCookie(cookie)
+            self.unregisterRR(rr)
+        except RequestRouterNotFoundException:
+            return self.retresult(404, 'rr not found')
+        except Exception as e:
+            return self.retresult(500, e.message)
+        return self.retresult(200, 'deregistered')
 
     @rpc_public
     def getselist(self, cookie):
@@ -314,7 +326,9 @@ class CdnHandler(app_manager.RyuApp):
     def delse(self, cookie, name):
         try:
             rr = self.getRRbyCookie(cookie)
-            rr.delse(name)
+            se = rr.getsebyname(name)
+            self.unregisterSE(se)
+            rr.delse(se)
             self.logger.info('SE deleted')
         except RequestRouterNotFoundException:
             return self.retresult(404, 'rr not found')

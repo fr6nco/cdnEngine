@@ -42,7 +42,7 @@ class TCPSession():
     QUIET_TIMER = 10
     GARBAGE_TIMER = 30 + QUIET_TIMER
 
-    def __init__(self, pkt):
+    def __init__(self, pkt, sesstype):
         self.uuid = uuid.uuid4()
         self.state = self.STATE_OPENING
 
@@ -50,17 +50,12 @@ class TCPSession():
             if not hasattr(protocol, 'protocol_name'):
                 continue
             elif protocol.protocol_name == 'ipv4':
-                dst_ip = protocol.dst
-                src_ip = protocol.src
+                self.dst_ip = protocol.dst
+                self.src_ip = protocol.src
             elif protocol.protocol_name == 'tcp':
-                src_port = protocol.src_port
-                dst_port = protocol.dst_port
+                self.src_port = protocol.src_port
+                self.dst_port = protocol.dst_port
                 self.src_seq = protocol.seq
-
-        self.dst_ip = dst_ip
-        self.src_ip = src_ip
-        self.dst_port = dst_port
-        self.src_port = src_port
 
         self.client_state = self.CLIENT_STATE_SYN_SENT
         self.server_state = None
@@ -69,7 +64,6 @@ class TCPSession():
         self.syn_pkt = pkt
 
         self.upstream_payload = ""
-        self.downstream_payload = ""
 
         self.client_fin_ack = 0
         self.server_fin_ack = 0
@@ -82,9 +76,10 @@ class TCPSession():
         self.quietTimer = None
         self.garbageTimer = None
 
-        self.type = None
-        self.handoverSesssion = None
+        self.type = sesstype
         self.isHttpProcessed = False
+
+        self.matchingSesssion = None
 
         self.logger = logging.getLogger('tcpsession')
         self.logger.info("TCP session initiated: " + self.__repr__())
@@ -112,15 +107,11 @@ class TCPSession():
     def getState(self):
         return self.state
 
-    def requestValid(self):
-        if self.httpRequest and self.httpRequest.raw_requestline != "" and self.isHttpProcessed is False:
-            self.isHttpProcessed = True
-            return True
-        else:
-            return False
-
     def getRawRequest(self):
         return self.httpRequest.raw_requestline
+
+    def setMatchingSesssion(self, sess):
+        self.matchingSesssion = sess
 
     def handleTimeout(self):
         print 'timeout occured for ' + str(self)
@@ -137,7 +128,7 @@ class TCPSession():
             self.quietTimer.kill()
         self.quietTimer = eventlet.spawn_after(self.QUIET_TIMER, self.handleQuietTimerTimeout)
 
-    def processPayload(self, p):
+    def processPayload(self, p, callback=None):
         self.upstream_payload += p
         if self.upstream_payload.strip() == "":
             print 'Payload is empty line, not parsing'
@@ -147,13 +138,11 @@ class TCPSession():
                 print 'failed to parse HTTP request'
             else:
                 self.reqeuest_size = len(self.upstream_payload)
+                if callable(callback):
+                    callback(self)
 
         self.upstream_payload = ""
 
-    def setHandoverSesssion(self, session):
-        print 'Matching session is'
-        print session
-        self.handoverSesssion = session
 
     def handleGarbage(self):
         if self.STATE_ESTABLISHED not in [self.client_state, self.server_state]:
@@ -186,7 +175,7 @@ class TCPSession():
                 if self.server_state == self.STATE_CLOSED:
                     self.state = self.STATE_TIME_WAIT
 
-    def handlePacket(self, pkt):
+    def handlePacket(self, pkt, callback=None):
         e = None
         i = None
         t = None
@@ -240,7 +229,7 @@ class TCPSession():
                     self.handleReset()
                 elif t.bits & tcp.TCP_PSH:
                     if p:
-                        self.processPayload(p)
+                        self.processPayload(p, callback)
                 elif t.bits & tcp.TCP_ACK:
                     if p is not None:
                         self.upstream_payload += p
@@ -259,54 +248,3 @@ class TCPSession():
 
     def __repr__(self):
         return "Session from {}:{} to {}:{} in state {} type {}".format(self.src_ip, self.src_port, self.dst_ip, self.dst_port, self.state, self.type)
-
-class TCPHandler():
-    def __init__(self):
-        self.sessions = {}
-        self.eventloop = eventlet.spawn_after(1, self.clearSessions)
-        self.request_routers = []
-
-    def clearSessions(self):
-        for key in self.sessions.keys():
-            if self.sessions[key].state in [TCPSession.STATE_CLOSED, TCPSession.STATE_TIMEOUT, TCPSession.STATE_CLOSED_RESET]:
-                try:
-                    del self.sessions[key]
-                    print 'removed session from list'
-                except KeyError:
-                    pass
-        self.eventloop = eventlet.spawn_after(1, self.clearSessions)
-
-    def getKeys(self, pkt):
-        for protocol in pkt:
-            if not hasattr(protocol, 'protocol_name'):
-                continue
-            elif protocol.protocol_name == 'ipv4':
-                dst_ip = protocol.dst
-                src_ip = protocol.src
-            elif protocol.protocol_name == 'tcp':
-                src_port = protocol.src_port
-                dst_port = protocol.dst_port
-
-        return src_ip+":"+str(src_port)+"-"+dst_ip+":"+str(dst_port), dst_ip+":"+str(dst_port)+"-"+src_ip+":"+str(src_port)
-
-    def handleIncoming(self, pkt, type):
-        key, key_rev = self.getKeys(pkt)
-
-        if key not in self.sessions:
-            if key_rev not in self.sessions:
-                sess = TCPSession(pkt)
-                self.sessions[key] = sess
-                retpkt = self.sessions[key].handlePacket(pkt)
-            else:
-                retpkt = self.sessions[key_rev].handlePacket(pkt)
-        else:
-            retpkt = self.sessions[key].handlePacket(pkt)
-
-        return retpkt
-
-    def registerRequestRouter(self, request_router):
-        self.request_routers.append(request_router)
-
-    def unregisterRequestRouter(self, request_router):
-        self.request_routers.remove(request_router)
-
