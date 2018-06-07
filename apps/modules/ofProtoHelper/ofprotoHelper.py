@@ -14,7 +14,7 @@ LOG = logging.getLogger('ryu.base.app_manager')
 
 UINT32_MAX = 0xffffffff
 
-class ofProtoHelper():
+class ofProtoHelperGeneric():
     def __init__(self):
         print 'Instantiated ofproto helper'
 

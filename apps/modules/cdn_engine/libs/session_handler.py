@@ -1,10 +1,6 @@
-from tcp_session import TCPSession
-from ryu.lib.packet import ethernet, ipv4, tcp, ether_types
+from apps.modules.cdn_engine.libs.tcp_session import TCPSession
 import eventlet
-import uuid
 from ryu import cfg
-from http_handler import HttpRequest
-import logging
 
 CONF = cfg.CONF
 

@@ -8,7 +8,7 @@ from ryu.lib.packet import ethernet
 from ryu.lib.packet import ether_types
 from ryu import cfg
 CONF = cfg.CONF
-from libs.ofProtoHelper.ofprotoHelper import ofProtoHelper
+from modules.ofProtoHelper.ofprotoHelper import ofProtoHelperGeneric
 
 class L2Handler(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
@@ -36,7 +36,7 @@ class L2Handler(app_manager.RyuApp):
         self.mac_to_port = {}
 
         CONF.register_opts(self.opts, group='l2')
-        self.ofHelper = ofProtoHelper()
+        self.ofHelper = ofProtoHelperGeneric()
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):

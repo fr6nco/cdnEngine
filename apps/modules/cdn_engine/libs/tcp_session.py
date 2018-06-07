@@ -1,10 +1,9 @@
-from ryu.lib.packet import ethernet, ipv4, tcp, ether_types
+from ryu.lib.packet import tcp
 import eventlet
 import uuid
 from ryu import cfg
 from http_handler import HttpRequest
 import logging
-
 CONF = cfg.CONF
 
 class TCPSession():
