@@ -41,7 +41,9 @@ class TCPSession():
     QUIET_TIMER = 10
     GARBAGE_TIMER = 30 + QUIET_TIMER
 
-    def __init__(self, pkt, sesstype):
+    def __init__(self, pkt, sesstype, sessionhandler):
+        self.sessionhandler = sessionhandler
+
         self.uuid = uuid.uuid4()
         self.state = self.STATE_OPENING
 
@@ -127,7 +129,7 @@ class TCPSession():
             self.quietTimer.kill()
         self.quietTimer = eventlet.spawn_after(self.QUIET_TIMER, self.handleQuietTimerTimeout)
 
-    def processPayload(self, p, callback=None):
+    def processPayload(self, p):
         self.upstream_payload += p
         if self.upstream_payload.strip() == "":
             print 'Payload is empty line, not parsing'
@@ -136,12 +138,11 @@ class TCPSession():
             if self.httpRequest.error_code:
                 print 'failed to parse HTTP request'
             else:
+                print 'payload parsed'
+                print self.httpRequest.raw_requestline
                 self.reqeuest_size = len(self.upstream_payload)
-                if callable(callback):
-                    callback(self)
-
+                self.sessionhandler.performHandover(self)
         self.upstream_payload = ""
-
 
     def handleGarbage(self):
         if self.STATE_ESTABLISHED not in [self.client_state, self.server_state]:
@@ -174,7 +175,7 @@ class TCPSession():
                 if self.server_state == self.STATE_CLOSED:
                     self.state = self.STATE_TIME_WAIT
 
-    def handlePacket(self, pkt, callback=None):
+    def handlePacket(self, pkt):
         e = None
         i = None
         t = None
@@ -228,7 +229,7 @@ class TCPSession():
                     self.handleReset()
                 elif t.bits & tcp.TCP_PSH:
                     if p:
-                        self.processPayload(p, callback)
+                        self.processPayload(p)
                 elif t.bits & tcp.TCP_ACK:
                     if p is not None:
                         self.upstream_payload += p
@@ -247,3 +248,7 @@ class TCPSession():
 
     def __repr__(self):
         return "Session from {}:{} to {}:{} in state {} type {}".format(self.src_ip, self.src_port, self.dst_ip, self.dst_port, self.state, self.type)
+
+
+class TCPSessionNotFoundException(Exception):
+    pass

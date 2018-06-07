@@ -1,8 +1,11 @@
 from ryu import cfg
 CONF = cfg.CONF
 
+from apps.modules.cdn_engine.libs.tcp_session import TCPSession, TCPSessionNotFoundException
+
 import logging
 import random
+import eventlet
 
 
 class ServiceEngine:
@@ -15,6 +18,18 @@ class ServiceEngine:
         self.cookie = random.randint(1, int(CONF.cdn.cookie_se_max)) << int(CONF.cdn.cookie_se_shift)
         self.logger = logging.getLogger('serviceengine ' + self.ip + ':' + str(self.port))
         self.logger.info("Service Engine Initiated")
+        self.eventloop = eventlet.spawn_after(1, self.clearSessions)
+
+    def clearSessions(self):
+        for key in self.sessions.keys():
+            if self.sessions[key].state in [TCPSession.STATE_CLOSED, TCPSession.STATE_TIMEOUT, TCPSession.STATE_CLOSED_RESET]:
+                try:
+                    print 'removing SE session'
+                    print self.sessions[key]
+                    del self.sessions[key]
+                except KeyError:
+                    pass
+        self.eventloop = eventlet.spawn_after(1, self.clearSessions)
 
     def addSession(self, key, session):
         self.sessions[key] = session
@@ -28,7 +43,7 @@ class ServiceEngine:
         elif rev_key in self.sessions:
             return self.sessions[rev_key]
         else:
-            return None
+            raise TCPSessionNotFoundException
 
     def delSession(self, key, rev_key):
         if key in self.sessions:
@@ -38,4 +53,5 @@ class ServiceEngine:
 
 
 class ServiceEngineNotFoundException(Exception):
+    #TODO write nice exception class
     pass

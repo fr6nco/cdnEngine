@@ -70,11 +70,8 @@ class CdnHandler(app_manager.RyuApp):
         self.ofHelperGeneric = ofProtoHelperGeneric()
 
         self.dpswitches = kwargs['switches']
+        self.cdnEngine = cdnEngine(kwargs['wsgi'], self.dpswitches)
 
-        self.cdnEngine = cdnEngine(kwargs['wsgi'], self.getSwitches)
-
-    def getSwitches(self):
-        return self.dpswitches
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):

@@ -1,25 +1,19 @@
-from apps.modules.cdn_engine.libs.tcp_session import TCPSession
-import eventlet
+from apps.modules.cdn_engine.libs.tcp_session import TCPSession, TCPSessionNotFoundException
+
+from apps.modules.cdn_engine.serviceEngine import ServiceEngine, ServiceEngineNotFoundException
+from apps.modules.cdn_engine.requestRouter import RequestRouter, RequestRouterNotFoundException
+
 from ryu import cfg
+
+import eventlet
+import random
+
 
 CONF = cfg.CONF
 
 class SessionHandler():
-    def __init__(self):
-        self.sessions = {}
-        self.eventloop = eventlet.spawn_after(1, self.clearSessions)
-        self.request_routers = {}
-
-    def clearSessions(self):
-        for key in self.sessions.keys():
-            if self.sessions[key].state in [TCPSession.STATE_CLOSED, TCPSession.STATE_TIMEOUT, TCPSession.STATE_CLOSED_RESET]:
-                try:
-                    del self.sessions[key]
-                    print 'removed session from list'
-                    print self.sessions
-                except KeyError:
-                    pass
-        self.eventloop = eventlet.spawn_after(1, self.clearSessions)
+    def __init__(self, cdnengine):
+        self.cdnengine = cdnengine
 
     def getKeys(self, pkt):
         for protocol in pkt:
@@ -34,68 +28,58 @@ class SessionHandler():
 
         return src_ip+":"+str(src_port)+"-"+dst_ip+":"+str(dst_port), dst_ip+":"+str(dst_port)+"-"+src_ip+":"+str(src_port)
 
-    def getRRbyCookie(self, cookie):
-        if cookie in self.request_routers:
-            return self.request_routers[cookie]['rr']
-        return None
+    def getKeysFromSesssion(self, session):
+        return session.src_ip+":"+str(session.src_port)+"-"+session.dst_ip+":"+str(session.dst_port), \
+               session.dst_ip+":"+str(session.dst_port)+"-"+session.src_ip+":"+str(session.src_port)
 
-    def getSEbyCookie(self, cookie):
-        for key, rrobj in self.request_routers.iteritems():
-            rr = rrobj['rr']
-            for se in rr.getServiceEngines():
-                if se.cookie == cookie:
-                    return se
-        return None
-
-    def manageHandover(self, session):
+    def performHandover(self, session):
+        print 'popping handover session for session'
+        print session
         if session.type == 'se':
             return
         elif session.type == 'rr':
-            for key, rrobj in self.request_routers.iteritems():
-                rr = rrobj['rr']
-                if session in rr.getSessions():
-                    #TODO chose SE magic here
+            print 'type is rr'
+            for rr in self.cdnengine.getRRs():
+                key, key_rev = self.getKeysFromSesssion(session)
+                try:
+                    sess = rr.getSession(key, key_rev)
                     se = rr.getServiceEngines()[0]
-                    matchingsess = se.getSessions().pop()
+                    matchingsess = se.getSessions().pop(random.choice(se.getSessions().keys()))
                     session.setMatchingSesssion(matchingsess)
                     print 'matching session set'
-
-        print self.request_routers
+                except TCPSessionNotFoundException:
+                    continue
 
     def handleIncoming(self, pkt, type, cookie):
         key, key_rev = self.getKeys(pkt)
+        sess = None
 
         if type == 'rr':
-            rr = self.getRRbyCookie(cookie)
-            if not rr:
-                print 'unknown packet, RR not registered'
+            try:
+                rr = self.cdnengine.getRRbyCookie(cookie)
+            except RequestRouterNotFoundException:
                 return None
 
-            sess = rr.getSession(key, key_rev)
-            if not sess:
-                sess = TCPSession(pkt, type)
+            try:
+                sess = rr.getSession(key, key_rev)
+            except TCPSessionNotFoundException:
+                sess = TCPSession(pkt, type, self)
                 rr.addSession(key, sess)
-            return sess.handlePacket(pkt, self.manageHandover)
+
+            return sess.handlePacket(pkt)
 
         elif type == 'se':
-            se = self.getSEbyCookie(cookie)
-            if not se:
-                print 'unknown packet, SE not registered'
+            try:
+                se = self.cdnengine.getSEbyCookie(cookie)
+            except ServiceEngineNotFoundException:
                 return None
 
-            sess = se.getSession(key, key_rev)
-            if not sess:
-                sess = TCPSession(pkt, type)
+            try:
+                sess = se.getSession(key, key_rev)
+            except TCPSessionNotFoundException:
+                sess = TCPSession(pkt, type, self)
                 se.addSession(key, sess)
+
             return sess.handlePacket(pkt)
         else:
             return None
-
-    def registerRequestRouter(self, request_router):
-        self.request_routers[request_router.cookie] = {}
-        self.request_routers[request_router.cookie]['rr'] = request_router
-        print self.request_routers
-
-    def unregisterRequestRouter(self, request_router):
-        if request_router.cookie in self.request_routers:
-            del self.request_routers[request_router.cookie]

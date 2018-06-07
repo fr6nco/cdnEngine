@@ -13,7 +13,7 @@ import random
 
 
 class cdnEngine():
-    def __init__(self, wsgi, getswcb):
+    def __init__(self, wsgi, switches):
         # List of request routers
         self.rrs = []
 
@@ -25,8 +25,8 @@ class cdnEngine():
         self.wsgi = wsgi
         self._initwsEndpoint()
 
-        self.getswitches = getswcb
-        self.sessionhandler = SessionHandler()
+        self.dpswitches = switches
+        self.sessionhandler = SessionHandler(self)
 
     def _initwsEndpoint(self):
         self.incoming_rpc_connections = []
@@ -36,41 +36,44 @@ class cdnEngine():
         })
 
     def registerRR(self, rr):
-        self.sessionhandler.registerRequestRouter(rr)
         self.rrs.append(rr)
 
         self.logger.info('RR registered to list')
         self.logger.info(self.rrs)
 
-        for dpid, dp in self.getswitches().dps.iteritems():
+        for dpid, dp in self.dpswitches.dps.iteritems():
             if dpid == CONF.cdn.sw_dpid:
                 self.dpHelper.loadRequestRouterToDP(dp, rr)
 
     def registerSE(self, se, rr=None):
-        for dpid, dp in self.getswitches().dps.iteritems():
+        for dpid, dp in self.dpswitches.dps.iteritems():
             if dpid == CONF.cdn.sw_dpid:
                 self.dpHelper.loadSeToDP(dp, se, rr)
 
     def unregisterRR(self, rr):
-        self.sessionhandler.unregisterRequestRouter(rr)
         self.rrs.remove(rr)
 
-        for dpid, dp in self.getswitches().dps.iteritems():
+        for dpid, dp in self.dpswitches.dps.iteritems():
             if dpid == CONF.cdn.sw_dpid:
                 self.dpHelper.unloadRequestRouterFromDP(dp, rr)
 
     def unregisterSE(self, se):
-        for dpid, dp in self.getswitches().dps.iteritems():
+        for dpid, dp in self.dpswitches.dps.iteritems():
             if dpid == CONF.cdn.sw_dpid:
                 self.dpHelper.unloadSeFromDP(dp, se)
 
     def getRRbyCookie(self, cookie):
-        self.logger.info(cookie)
-        self.logger.info(self.rrs)
         for rr in self.rrs:
             if rr.cookie == cookie:
                 return rr
         raise RequestRouterNotFoundException
+
+    def getSEbyCookie(self, cookie):
+        for rr in self.rrs:
+            for se in rr.getServiceEngines():
+                if se.cookie == cookie:
+                    return se
+        raise ServiceEngineNotFoundException
 
     def getRRs(self):
         return self.rrs

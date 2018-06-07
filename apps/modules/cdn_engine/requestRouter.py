@@ -2,9 +2,11 @@ from ryu import cfg
 CONF = cfg.CONF
 
 from serviceEngine import ServiceEngine, ServiceEngineNotFoundException
+from apps.modules.cdn_engine.libs.tcp_session import TCPSession, TCPSessionNotFoundException
 
 import logging
 import random
+import eventlet
 
 class RequestRouter:
     def __init__(self, ip, port):
@@ -15,6 +17,19 @@ class RequestRouter:
         self.cookie = random.randint(1, int(CONF.cdn.cookie_rr_max)) << int(CONF.cdn.cookie_rr_shift)
         self.logger = logging.getLogger('requestrouter ' + self.ip + ':' + str(self.port))
         self.logger.info("Request Router Initiated")
+
+        self.eventloop = eventlet.spawn_after(1, self.clearSessions)
+
+    def clearSessions(self):
+        for key in self.sessions.keys():
+            if self.sessions[key].state in [TCPSession.STATE_CLOSED, TCPSession.STATE_TIMEOUT, TCPSession.STATE_CLOSED_RESET]:
+                try:
+                    print 'removing RR session'
+                    print self.sessions[key]
+                    del self.sessions[key]
+                except KeyError:
+                    pass
+        self.eventloop = eventlet.spawn_after(1, self.clearSessions)
 
     def addServiceEngine(self, se):
         exists = False
@@ -39,7 +54,7 @@ class RequestRouter:
         for se in self.serviceEngines:
             if se.ip == ip and se.port == port:
                 return se
-        return None
+        return ServiceEngineNotFoundException
 
     def getsebyname(self, name):
         for se in self.serviceEngines:
@@ -59,7 +74,7 @@ class RequestRouter:
         elif rev_key in self.sessions:
             return self.sessions[rev_key]
         else:
-            return None
+            raise TCPSessionNotFoundException
 
     def getSessions(self):
         return self.sessions
@@ -70,6 +85,6 @@ class RequestRouter:
         elif rev_key in self.sessions:
             del self.sessions[rev_key]
 
-
 class RequestRouterNotFoundException(Exception):
+    #TODO write nice exception class
     pass
