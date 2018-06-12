@@ -1,17 +1,22 @@
 from ryu import cfg
 CONF = cfg.CONF
 
-from serviceEngine import ServiceEngine, ServiceEngineNotFoundException
-from apps.modules.cdn_engine.libs.tcp_session import TCPSession, TCPSessionNotFoundException
+from apps.modules.cdn_engine.serviceEngine import ServiceEngineNotFoundException
+from apps.modules.cdn_engine.tcp_session import TCPSession, TCPSessionNotFoundException, IncorrectSessionTypeException
+from apps.modules.cdn_engine.hsession import HandoverSession
 
 import logging
 import random
 import eventlet
+import uuid
 
 class RequestRouter:
     def __init__(self, ip, port):
+        self.uuid = uuid.uuid4()
         self.serviceEngines = []
         self.sessions = {}
+        self.hsessions = []
+        self.cdnengine = None
         self.ip = ip
         self.port = port
         self.cookie = random.randint(1, int(CONF.cdn.cookie_rr_max)) << int(CONF.cdn.cookie_rr_shift)
@@ -84,6 +89,42 @@ class RequestRouter:
             del self.sessions[key]
         elif rev_key in self.sessions:
             del self.sessions[rev_key]
+
+    def setEngine(self, engine):
+        self.cdnengine = engine
+
+    def _getKeysFromSesssion(self, session):
+        return session.src_ip+":"+str(session.src_port)+"-"+session.dst_ip+":"+str(session.dst_port), \
+               session.dst_ip+":"+str(session.dst_port)+"-"+session.src_ip+":"+str(session.src_port)
+
+    def _getMatchingSe(self, hsession):
+        return self.cdnengine.findShortestSE(hsession, self)
+
+    def _savehSesssion(self, hsession):
+        self.hsessions.append(hsession)
+
+    def _delhSesssion(self, hsession):
+        self.hsessions.remove(hsession)
+
+    def startHandover(self, session):
+        if session.type == TCPSession.TYPE_RR:
+            key, key_rev = self._getKeysFromSesssion(session)
+            try:
+                sess = self.getSession(key, key_rev)
+                hsession = HandoverSession(sess, self)
+                se = self._getMatchingSe(hsession)
+                #hsession.setSe(se)
+                #sesess = se.getSessions().pop(random.choice(se.getSessions().keys()))
+                #hsession.setSeSession(sesess) #TODO maybe just mark as being used not pop
+                #self._savehSesssion(hsession)
+                self.logger.info('Handover Sesssion started')
+            except TCPSessionNotFoundException:
+                self.logger.error('This should not have happened, session does not belong to this Router')
+            except IndexError:
+                self.logger.error('No more session are available to be handovered, not performing handover')
+
+        else:
+            raise IncorrectSessionTypeException
 
 class RequestRouterNotFoundException(Exception):
     #TODO write nice exception class

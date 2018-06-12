@@ -1,15 +1,16 @@
 from ryu import cfg
 CONF = cfg.CONF
 
-from apps.modules.cdn_engine.libs.tcp_session import TCPSession, TCPSessionNotFoundException
+from apps.modules.cdn_engine.tcp_session import TCPSession, TCPSessionNotFoundException
 
 import logging
 import random
 import eventlet
-
+import uuid
 
 class ServiceEngine:
     def __init__(self, name, ip, port):
+        self.uuid = uuid.uuid4()
         self.name = name
         self.ip = ip
         self.port = port

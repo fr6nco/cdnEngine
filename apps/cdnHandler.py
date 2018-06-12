@@ -1,18 +1,20 @@
 from ryu.controller import ofp_event
 from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
-from ryu.ofproto import ofproto_v1_3, inet
+from ryu.ofproto import ofproto_v1_3
 from ryu.lib.packet import packet
 from ryu.base import app_manager
-from ryu.topology import switches
+from ryu.topology import switches, event
+from ryu.topology.api import get_switch, get_link, get_host
 from ryu.controller.handler import set_ev_cls
 from ryu import cfg
 from ryu.app.wsgi import WSGIApplication
 
-from modules.ofProtoHelper.ofprotoHelper import ofProtoHelperGeneric
-from modules.cdn_engine.libs.session_handler import SessionHandler
-from modules.cdn_engine.libs.dp_helper import DPHelper
-from modules.cdn_engine.cdn_engine import cdnEngine
-import json
+from apps.modules.ofProtoHelper.ofprotoHelper import ofProtoHelperGeneric
+from apps.modules.cdn_engine.cdn_engine import cdnEngine
+
+from apps.modules.cdn_engine.tcp_session import TCPSession
+
+import networkx as nx
 
 CONF = cfg.CONF
 
@@ -70,6 +72,7 @@ class CdnHandler(app_manager.RyuApp):
         self.ofHelperGeneric = ofProtoHelperGeneric()
 
         self.dpswitches = kwargs['switches']
+        self.net = nx.DiGraph()
         self.cdnEngine = cdnEngine(kwargs['wsgi'], self.dpswitches)
 
 
@@ -99,9 +102,9 @@ class CdnHandler(app_manager.RyuApp):
     def _packet_in_handler(self, ev):
         type = None
         if ev.msg.cookie & (int(CONF.cdn.cookie_rr_max) << int(CONF.cdn.cookie_rr_shift)) == ev.msg.cookie:
-            type = 'rr'
+            type = TCPSession.TYPE_RR
         elif ev.msg.cookie & (int(CONF.cdn.cookie_se_max) << int(CONF.cdn.cookie_se_shift)) == ev.msg.cookie:
-            type = 'se'
+            type = TCPSession.TYPE_SE
         else:
             return
 
@@ -128,4 +131,42 @@ class CdnHandler(app_manager.RyuApp):
                     out_dp, out_port = self.getOutPort(dst_ip)
                     if out_dp is not None:
                         self.ofHelperGeneric.send_packet_out(datapath=out_dp, pkt=out_pkt, output=out_port)
+
+    def printout(self):
+        print "******** List of links"
+        print self.net.edges(data=True)
+        print "******** Nodes"
+        print self.net.nodes(data=True)
+
+    @set_ev_cls(event.EventSwitchEnter)
+    def sw_in_events(self, ev):
+        print ev
+        self.net.add_node(ev.switch.dp.id)
+
+    @set_ev_cls(event.EventSwitchLeave)
+    def sw_out_events(self, ev):
+        print ev
+        self.net.remove_node(ev.switch.dp.id)
+
+    @set_ev_cls(event.EventHostAdd)
+    def host_in_events(self, ev):
+        print ev
+        self.net.add_node(ev.host.ipv4[0])
+        self.net.add_edge(ev.host.port.dpid, ev.host.ipv4[0], port=ev.host.port.port_no)
+        self.net.add_edge(ev.host.ipv4[0], ev.host.port.dpid, port=ev.host.port.port_no)
+        self.printout()
+
+    @set_ev_cls(event.EventHostDelete)
+    def host_out_events(self, ev):
+        print ev
+
+    @set_ev_cls(event.EventLinkAdd)
+    def link_in_events(self, ev):
+        self.net.add_edge(ev.link.src.dpid, ev.link.dst.dpid, port=ev.link.src.port_no)
+        self.net.add_edge(ev.link.dst.dpid, ev.link.src.dpid, port=ev.link.dst.port_no)
+        self.printout()
+
+    @set_ev_cls(event.EventLinkDelete)
+    def link_out_events(self, ev):
+        print ev
 

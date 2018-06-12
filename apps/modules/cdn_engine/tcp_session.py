@@ -2,14 +2,13 @@ from ryu.lib.packet import tcp
 import eventlet
 import uuid
 from ryu import cfg
-from http_handler import HttpRequest
+from apps.modules.cdn_engine.libs.http_handler import HttpRequest
 import logging
 CONF = cfg.CONF
 
 class TCPSession():
-    TYPE_CLIENT = "client"
+    TYPE_SE = "se"
     TYPE_RR = "rr"
-    TYPE_OTHER = "other"
 
     STATE_HTTP = "http" #HTTP received
     STATE_HANDOVERED = "handovered" #handovered
@@ -41,9 +40,7 @@ class TCPSession():
     QUIET_TIMER = 10
     GARBAGE_TIMER = 30 + QUIET_TIMER
 
-    def __init__(self, pkt, sesstype, sessionhandler):
-        self.sessionhandler = sessionhandler
-
+    def __init__(self, pkt, sesstype):
         self.uuid = uuid.uuid4()
         self.state = self.STATE_OPENING
 
@@ -80,10 +77,23 @@ class TCPSession():
         self.type = sesstype
         self.isHttpProcessed = False
 
-        self.matchingSesssion = None
-
         self.logger = logging.getLogger('tcpsession')
         self.logger.info("TCP session initiated: " + self.__repr__())
+
+        self.rr = None
+        self.se = None
+
+    def setRouter(self, rr):
+        if self.type == TCPSession.TYPE_RR:
+            self.rr = rr
+        else:
+            raise IncorrectSessionTypeException
+
+    def setSe(self, se):
+        if self.type == TCPSession.TYPE_SE:
+            self.se = se
+        else:
+            raise IncorrectSessionTypeException
 
     def handleQuietTimerTimeout(self):
         print 'quiet timeout occured for ' + str(self)
@@ -93,11 +103,6 @@ class TCPSession():
             self.state = self.STATE_TIMEOUT
         elif self.state == self.STATE_CLOSED_RESET_TIME_WAIT:
             self.state = self.STATE_CLOSED_RESET
-
-    def setType(self, type):
-        print 'setting type to'
-        print type
-        self.type = type
 
     def getType(self):
         return self.type
@@ -110,9 +115,6 @@ class TCPSession():
 
     def getRawRequest(self):
         return self.httpRequest.raw_requestline
-
-    def setMatchingSesssion(self, sess):
-        self.matchingSesssion = sess
 
     def handleTimeout(self):
         print 'timeout occured for ' + str(self)
@@ -141,7 +143,7 @@ class TCPSession():
                 print 'payload parsed'
                 print self.httpRequest.raw_requestline
                 self.reqeuest_size = len(self.upstream_payload)
-                self.sessionhandler.performHandover(self)
+                self.rr.startHandover(self)
         self.upstream_payload = ""
 
     def handleGarbage(self):
@@ -251,4 +253,7 @@ class TCPSession():
 
 
 class TCPSessionNotFoundException(Exception):
+    pass
+
+class IncorrectSessionTypeException(Exception):
     pass
