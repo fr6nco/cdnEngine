@@ -15,7 +15,6 @@ class ServiceEngine:
         self.ip = ip
         self.port = port
         self.sessions = {}
-        self.enabled = False
         self.cookie = random.randint(1, int(CONF.cdn.cookie_se_max)) << int(CONF.cdn.cookie_se_shift)
         self.logger = logging.getLogger('serviceengine ' + self.ip + ':' + str(self.port))
         self.logger.info("Service Engine Initiated")
@@ -54,5 +53,5 @@ class ServiceEngine:
 
 
 class ServiceEngineNotFoundException(Exception):
-    #TODO write nice exception class
-    pass
+    def __init__(self, message):
+        super(ServiceEngineNotFoundException, self).__init__(message)

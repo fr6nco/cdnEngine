@@ -10,9 +10,9 @@ import random
 CONF = cfg.CONF
 
 class HandoverSession:
+    STATE_ESTABLISHING = 'ESTABLISHING'
     STATE_RR_SETUP = 'RR_SETUP'
     STATE_SE_SETUP = 'SE_SETUP'
-    STATE_HANDOVERING = 'HANDOVERING'
     STATE_HANDOVERED = 'HANDOVERED'
     STATE_FINISHED = 'FINISHED'
 
@@ -23,6 +23,8 @@ class HandoverSession:
 
         self.rr = rr
         self.se = None
+
+        self.state = HandoverSession.STATE_ESTABLISHING
 
         self.cookie = random.randint(1, int(CONF.cdn.cookie_tcp_sess_max)) << int(CONF.cdn.cookie_tcp_shift)
 
@@ -35,4 +37,9 @@ class HandoverSession:
     def setSeSession(self, session):
         self.sesession = session
 
+    def startHandover(self):
+        self.state = HandoverSession.STATE_RR_SETUP
+        self.se = self.rr._getMatchingSe(self)
+        self.sesession = self.se.getSessions().pop(random.choice(self.se.getSessions().keys()))
+        self.logger.info('Handover Sesssion started')
 

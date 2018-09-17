@@ -24,12 +24,6 @@ class WsCDNEndpoint(ControllerBase):
 
         super(WsCDNEndpoint, self).__init__(req, link, data, **config)
 
-    def _retresult(self, code, obj):
-        return json.dumps({
-            'code': code,
-            'message': obj
-        })
-
     def _addRPCConnection(self, rpcconnection):
         self.incoming_rpc_connections.append(rpcconnection)
 
@@ -43,25 +37,17 @@ class WsCDNEndpoint(ControllerBase):
 
     @rpc_public
     def hello(self, ip, port):
-        try:
-            self.logger.info('Request Router with http params {}:{} registering'.format(ip, port))
-            rr = RequestRouter(ip, port)
-            self.cdnengine.registerRR(rr)
-        except Exception as e:
-            return self._retresult(500, e.message)
-        return self._retresult(200, rr.cookie)
+        self.logger.info('Request Router with http params {}:{} registering'.format(ip, port))
+        rr = RequestRouter(ip, port)
+        self.cdnengine.registerRR(rr)
+        return rr.cookie
 
     @rpc_public
     def goodbye(self, cookie):
-        try:
-            self.logger.info('Request router deregistering with cookie {}'.format(cookie))
-            rr = self.cdnengine.getRRbyCookie(cookie)
-            self.cdnengine.unregisterRR(rr)
-        except RequestRouterNotFoundException:
-            return self._retresult(404, 'rr not found')
-        except Exception as e:
-            return self._retresult(500, e.message)
-        return self._retresult(200, 'deregistered')
+        self.logger.info('Request router deregistering with cookie {}'.format(cookie))
+        rr = self.cdnengine.getRRbyCookie(cookie)
+        self.cdnengine.unregisterRR(rr)
+        return 'goodbye'
 
     @rpc_public
     def getselist(self, cookie):
@@ -73,60 +59,20 @@ class WsCDNEndpoint(ControllerBase):
 
     @rpc_public
     def registerse(self, cookie, name, ip, port):
-        try:
-            rr = self.cdnengine.getRRbyCookie(cookie)
-            se = ServiceEngine(name, ip, port)
-            rr.addServiceEngine(se)
-            self.cdnengine.registerSE(se, rr)
-        except RequestRouterNotFoundException:
-            return self._retresult(404, 'rr not found')
-        except Exception as e:
-            return self._retresult(500, e.message)
-        return self._retresult(200, 'registered')
-
-    @rpc_public
-    def disablese(self, cookie, name):
-        try:
-            rr = self.cdnengine.getRRbyCookie(cookie)
-            se = rr.getsebyname(name)
-            se.enabled = False
-        except RequestRouterNotFoundException:
-            return self._retresult(404, 'rr not found')
-        except ServiceEngineNotFoundException:
-            return self._retresult(404, 'se not found')
-        except Exception as e:
-            return self._retresult(500, e.message)
-        return self._retresult(200, 'disabled')
-
-    @rpc_public
-    def enablese(self, cookie, name):
-        try:
-            rr = self.cdnengine.getRRbyCookie(cookie)
-            se = rr.getsebyname(name)
-            se.enabled = True
-        except RequestRouterNotFoundException:
-            return self._retresult(404, 'rr not found')
-        except ServiceEngineNotFoundException:
-            return self._retresult(404, 'se not found')
-        except Exception as e:
-            return self._retresult(500, e.message)
-        return self._retresult(200, 'enabled')
+        rr = self.cdnengine.getRRbyCookie(cookie)
+        se = ServiceEngine(name, ip, port)
+        rr.addServiceEngine(se)
+        self.cdnengine.registerSE(se, rr)
+        return 'registered'
 
     @rpc_public
     def delse(self, cookie, name):
-        try:
-            rr = self.cdnengine.getRRbyCookie(cookie)
-            se = rr.getsebyname(name)
-            self.cdnengine.unregisterSE(se)
-            rr.delse(se)
-            self.logger.info('SE deleted')
-        except RequestRouterNotFoundException:
-            return self._retresult(404, 'rr not found')
-        except ServiceEngineNotFoundException:
-            return self._retresult(404, 'se not found')
-        except Exception as e:
-            return self._retresult(500, e.message)
-        return self._retresult(200, 'deleted')
+        rr = self.cdnengine.getRRbyCookie(cookie)
+        se = rr.getsebyname(name)
+        self.cdnengine.unregisterSE(se)
+        rr.delse(se)
+        self.logger.info('SE deleted')
+        return 'deleted'
 
     def tracer(self, dir, context, msg):
         self.logger.info("{}: {}".format(dir, msg))

@@ -14,7 +14,6 @@ class RequestRouter:
     def __init__(self, ip, port):
         self.uuid = uuid.uuid4()
         self.serviceEngines = []
-        self.sessions = {}
         self.hsessions = []
         self.cdnengine = None
         self.ip = ip
@@ -26,12 +25,11 @@ class RequestRouter:
         self.eventloop = eventlet.spawn_after(1, self.clearSessions)
 
     def clearSessions(self):
-        for key in self.sessions.keys():
-            if self.sessions[key].state in [TCPSession.STATE_CLOSED, TCPSession.STATE_TIMEOUT, TCPSession.STATE_CLOSED_RESET]:
+        for hsess in self.hsessions:
+            if hsess.rrsession.state in [TCPSession.STATE_CLOSED, TCPSession.STATE_TIMEOUT, TCPSession.STATE_CLOSED_RESET]:
                 try:
                     print 'removing RR session'
-                    print self.sessions[key]
-                    del self.sessions[key]
+                    self.hsessions.remove(hsess)
                 except KeyError:
                     pass
         self.eventloop = eventlet.spawn_after(1, self.clearSessions)
@@ -59,73 +57,35 @@ class RequestRouter:
         for se in self.serviceEngines:
             if se.ip == ip and se.port == port:
                 return se
-        return ServiceEngineNotFoundException
+        raise ServiceEngineNotFoundException('Service engine ' + ip + ':' + str(port)  + ' not found')
 
     def getsebyname(self, name):
         for se in self.serviceEngines:
             if se.name == name:
                 return se
-        raise ServiceEngineNotFoundException
+        raise ServiceEngineNotFoundException('Service engine ' + name + ' not found')
 
     def delse(self, se):
         self.serviceEngines.remove(se)
 
-    def addSession(self, key, session):
-        self.sessions[key] = session
+    def addSession(self, hsession):
+        self.hsessions.append(hsession)
 
     def getSession(self, key, rev_key):
-        if key in self.sessions:
-            return self.sessions[key]
-        elif rev_key in self.sessions:
-            return self.sessions[rev_key]
-        else:
-            raise TCPSessionNotFoundException
-
-    def getSessions(self):
-        return self.sessions
-
-    def delSession(self, key, rev_key):
-        if key in self.sessions:
-            del self.sessions[key]
-        elif rev_key in self.sessions:
-            del self.sessions[rev_key]
+        for hsess in self.hsessions:
+            skey, srev_key = hsess.rrsession.getKeys()
+            if key == skey or key == srev_key:
+                return hsess.rrsession
+        raise TCPSessionNotFoundException
 
     def setEngine(self, engine):
         self.cdnengine = engine
 
-    def _getKeysFromSesssion(self, session):
-        return session.src_ip+":"+str(session.src_port)+"-"+session.dst_ip+":"+str(session.dst_port), \
-               session.dst_ip+":"+str(session.dst_port)+"-"+session.src_ip+":"+str(session.src_port)
-
     def _getMatchingSe(self, hsession):
         return self.cdnengine.findShortestSE(hsession, self)
 
-    def _savehSesssion(self, hsession):
-        self.hsessions.append(hsession)
-
-    def _delhSesssion(self, hsession):
-        self.hsessions.remove(hsession)
-
-    def startHandover(self, session):
-        if session.type == TCPSession.TYPE_RR:
-            key, key_rev = self._getKeysFromSesssion(session)
-            try:
-                sess = self.getSession(key, key_rev)
-                hsession = HandoverSession(sess, self)
-                se = self._getMatchingSe(hsession)
-                #hsession.setSe(se)
-                #sesess = se.getSessions().pop(random.choice(se.getSessions().keys()))
-                #hsession.setSeSession(sesess) #TODO maybe just mark as being used not pop
-                #self._savehSesssion(hsession)
-                self.logger.info('Handover Sesssion started')
-            except TCPSessionNotFoundException:
-                self.logger.error('This should not have happened, session does not belong to this Router')
-            except IndexError:
-                self.logger.error('No more session are available to be handovered, not performing handover')
-
-        else:
-            raise IncorrectSessionTypeException
 
 class RequestRouterNotFoundException(Exception):
-    #TODO write nice exception class
-    pass
+    def __init__(self, message):
+        super(RequestRouterNotFoundException, self).__init__(message)
+

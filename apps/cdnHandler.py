@@ -73,7 +73,7 @@ class CdnHandler(app_manager.RyuApp):
 
         self.dpswitches = kwargs['switches']
         self.net = nx.DiGraph()
-        self.cdnEngine = cdnEngine(kwargs['wsgi'], self.dpswitches)
+        self.cdnEngine = cdnEngine(kwargs['wsgi'], self.dpswitches, self.net)
 
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
@@ -140,33 +140,32 @@ class CdnHandler(app_manager.RyuApp):
 
     @set_ev_cls(event.EventSwitchEnter)
     def sw_in_events(self, ev):
-        print ev
-        self.net.add_node(ev.switch.dp.id)
+        self.net.add_node(ev.switch.dp.id, type='sw')
 
     @set_ev_cls(event.EventSwitchLeave)
     def sw_out_events(self, ev):
-        print ev
         self.net.remove_node(ev.switch.dp.id)
 
     @set_ev_cls(event.EventHostAdd)
     def host_in_events(self, ev):
-        print ev
-        self.net.add_node(ev.host.ipv4[0])
+        self.net.add_node(ev.host.ipv4[0], type='host')
         self.net.add_edge(ev.host.port.dpid, ev.host.ipv4[0], port=ev.host.port.port_no)
         self.net.add_edge(ev.host.ipv4[0], ev.host.port.dpid, port=ev.host.port.port_no)
         self.printout()
 
     @set_ev_cls(event.EventHostDelete)
     def host_out_events(self, ev):
-        print ev
+        self.net.remove_node(ev.host.ipv4[0])
 
     @set_ev_cls(event.EventLinkAdd)
     def link_in_events(self, ev):
         self.net.add_edge(ev.link.src.dpid, ev.link.dst.dpid, port=ev.link.src.port_no)
         self.net.add_edge(ev.link.dst.dpid, ev.link.src.dpid, port=ev.link.dst.port_no)
-        self.printout()
 
     @set_ev_cls(event.EventLinkDelete)
     def link_out_events(self, ev):
-        print ev
-
+        try:
+            self.net.remove_edge(ev.link.src.dpid, ev.link.dst.dpid)
+            self.net.remove_edge(ev.link.dst.dpid, ev.link.src.dpid)
+        except nx.NetworkXError:
+            pass

@@ -33,9 +33,6 @@ class TCPSession():
 
     CLOSING_FIN_SENT = "fin_sent"
 
-    CLIENT = "client"
-    SERVER = "server"
-
     TIMEOUT_TIMER = 10
     QUIET_TIMER = 10
     GARBAGE_TIMER = 30 + QUIET_TIMER
@@ -80,12 +77,12 @@ class TCPSession():
         self.logger = logging.getLogger('tcpsession')
         self.logger.info("TCP session initiated: " + self.__repr__())
 
-        self.rr = None
+        self.hsess = None
         self.se = None
 
-    def setRouter(self, rr):
+    def setHandoverSess(self, hsess):
         if self.type == TCPSession.TYPE_RR:
-            self.rr = rr
+            self.hsess = hsess
         else:
             raise IncorrectSessionTypeException
 
@@ -103,6 +100,10 @@ class TCPSession():
             self.state = self.STATE_TIMEOUT
         elif self.state == self.STATE_CLOSED_RESET_TIME_WAIT:
             self.state = self.STATE_CLOSED_RESET
+
+    def getKeys(self):
+        return self.src_ip + ":" + str(self.src_port) + "-" + self.dst_ip + ":" + str(self.dst_port), \
+               self.dst_ip + ":" + str(self.dst_port) + "-" + self.src_ip + ":" + str(self.src_port)
 
     def getType(self):
         return self.type
@@ -143,7 +144,7 @@ class TCPSession():
                 print 'payload parsed'
                 print self.httpRequest.raw_requestline
                 self.reqeuest_size = len(self.upstream_payload)
-                self.rr.startHandover(self)
+                self.hsess.startHandover()
         self.upstream_payload = ""
 
     def handleGarbage(self):
@@ -245,7 +246,6 @@ class TCPSession():
             if self.state == self.STATE_TIME_WAIT:
                 self.garbageTimer.kill()
                 self.quietTimer = eventlet.spawn_after(self.QUIET_TIMER, self.handleQuietTimerTimeout)
-
         return pkt
 
     def __repr__(self):

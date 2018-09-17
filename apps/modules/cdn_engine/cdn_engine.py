@@ -3,6 +3,7 @@ CONF = cfg.CONF
 
 from libs.dp_helper import DPHelper
 from apps.modules.cdn_engine.tcp_session import TCPSession, TCPSessionNotFoundException
+from apps.modules.cdn_engine.hsession import HandoverSession
 
 from ws_endpoint import WsCDNEndpoint
 from requestRouter import RequestRouterNotFoundException
@@ -11,7 +12,7 @@ from serviceEngine import ServiceEngineNotFoundException
 import logging
 
 class cdnEngine():
-    def __init__(self, wsgi, switches):
+    def __init__(self, wsgi, switches, net):
         # List of request routers
         self.rrs = []
 
@@ -24,6 +25,7 @@ class cdnEngine():
         self._initwsEndpoint()
 
         self.dpswitches = switches
+        self.net = net
 
     def _initwsEndpoint(self):
         self.incoming_rpc_connections = []
@@ -31,6 +33,9 @@ class cdnEngine():
         self.wsgi.register(WsCDNEndpoint, data={
             'cdnengine': self
         })
+
+    def getNet(self):
+        return self.net
 
     def registerRR(self, rr):
         rr.setEngine(self)
@@ -64,17 +69,14 @@ class cdnEngine():
         for rr in self.rrs:
             if rr.cookie == cookie:
                 return rr
-        raise RequestRouterNotFoundException
+        raise RequestRouterNotFoundException('RR cookie ' + str(cookie) + ' not found')
 
     def getSEbyCookie(self, cookie):
         for rr in self.rrs:
             for se in rr.getServiceEngines():
                 if se.cookie == cookie:
                     return se
-        raise ServiceEngineNotFoundException
-
-    def findShortestSE(self, hsession, rr):
-        pass
+        raise ServiceEngineNotFoundException('SE cookie ' + str(cookie) + ' not found')
 
     def getRRs(self):
         return self.rrs
@@ -95,7 +97,6 @@ class cdnEngine():
 
     def handleIncoming(self, pkt, type, cookie):
         key, key_rev = self._getKeysFromPkt(pkt)
-        sess = None
 
         if type == TCPSession.TYPE_RR:
             try:
@@ -107,8 +108,9 @@ class cdnEngine():
                 sess = rr.getSession(key, key_rev)
             except TCPSessionNotFoundException:
                 sess = TCPSession(pkt, type)
-                rr.addSession(key, sess)
+                hsess = HandoverSession(sess, rr)
                 sess.setRouter(rr)
+                rr.addSession(hsess)
 
             return sess.handlePacket(pkt)
 
